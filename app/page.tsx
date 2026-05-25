@@ -169,7 +169,7 @@ export default function Home() {
                 <p className="text-[14px] text-slate-500">
                   Connect a folder on your computer to get started. Subfolders inside it
                   become your classes — pick where documents come <em>from</em> and where
-                  they go <em>to</em>, then hit MERK.
+                  they go <em>to</em>, then hit Mark.
                 </p>
               ) : (
                 <div className="flex flex-col gap-5">
@@ -250,7 +250,7 @@ export default function Home() {
             </div>
           )}
 
-          {/* MERK button — moves From → To for now */}
+          {/* Mark button — moves From → To for now */}
           <button
             onClick={handleMark}
             disabled={!canMark}
@@ -267,7 +267,7 @@ export default function Home() {
               </>
             ) : (
               <>
-                <span>MERK ▶</span>
+                <span>Mark ▶</span>
                 <span className="text-[13px] font-normal opacity-70">
                   {canMark ? `Move ${files.length} document${files.length === 1 ? "" : "s"} to “${toName}”` : "Pick a From and To folder"}
                 </span>

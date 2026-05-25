@@ -38,7 +38,7 @@ export const DEFAULT_MARK_TYPES: MarkType[] = [
 export const DEFAULT_SETTINGS: Settings = {
   defaultStrictness: 7,
   accent: "indigo",
-  profile: { name: "Michael Bernard", subject: "Afrikaans" },
+  profile: { name: "Michael Bernard", subject: "English" },
   markTypes: DEFAULT_MARK_TYPES,
 };
 
