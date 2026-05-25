@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import StrictnessSlider from "@/components/StrictnessSlider";
 import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings } from "@/components/SettingsPanel";
+import InstallButton from "@/components/InstallButton";
 import {
   type Folder,
   type FileEntry,
@@ -207,8 +208,9 @@ export default function Home() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center px-8 shrink-0">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shrink-0">
           <h1 className="text-[18px] font-semibold text-slate-900">Mark New Batch</h1>
+          <InstallButton />
         </header>
 
         {/* Body */}
