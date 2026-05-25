@@ -25,3 +25,10 @@ export async function POST(req: NextRequest) {
   });
   return res;
 }
+
+// Sign out — clear the auth cookie
+export async function DELETE() {
+  const res = NextResponse.json({ ok: true });
+  res.cookies.set("am_auth", "", { httpOnly: true, path: "/", maxAge: 0 });
+  return res;
+}
