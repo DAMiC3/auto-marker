@@ -20,7 +20,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full`}>
+    <html lang="en" className={`${inter.variable} h-full`} suppressHydrationWarning>
       <body className="h-full font-sans antialiased">
         {/* Apply saved accent before paint to avoid a flash */}
         <Script id="accent-init" strategy="beforeInteractive">

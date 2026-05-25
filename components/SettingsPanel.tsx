@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import MarkShapeIcon, { type MarkShape, MARK_SHAPES } from "@/components/MarkShapeIcon";
 
 export interface MarkType {
   id: string;
   label: string;
   abbrev: string;
   color: string;
+  shape: MarkShape;
 }
 
 export interface Profile {
@@ -25,12 +27,12 @@ export interface Settings {
 // Standard exam-marking mark types (M/A/B/E/FT/C), as used by e-marking tools
 // and exam-board mark schemes. Each gets a default colour the user can change.
 export const DEFAULT_MARK_TYPES: MarkType[] = [
-  { id: "method",        label: "Method mark",      abbrev: "M",  color: "#2563EB" },
-  { id: "accuracy",      label: "Accuracy mark",    abbrev: "A",  color: "#16A34A" },
-  { id: "independent",   label: "Independent mark", abbrev: "B",  color: "#7C3AED" },
-  { id: "explanation",   label: "Explanation mark", abbrev: "E",  color: "#D97706" },
-  { id: "followthrough", label: "Follow-through",   abbrev: "FT", color: "#0891B2" },
-  { id: "communication", label: "Communication",    abbrev: "C",  color: "#DB2777" },
+  { id: "full",          label: "Full mark",        abbrev: "M",  color: "#16A34A", shape: "tick" },
+  { id: "half",          label: "Half mark",        abbrev: "½",  color: "#16A34A", shape: "half" },
+  { id: "accuracy",      label: "Accuracy mark",    abbrev: "A",  color: "#2563EB", shape: "tick" },
+  { id: "incorrect",     label: "Incorrect",        abbrev: "✗",  color: "#DC2626", shape: "cross" },
+  { id: "explanation",   label: "Explanation mark", abbrev: "E",  color: "#D97706", shape: "circle" },
+  { id: "followthrough", label: "Follow-through",   abbrev: "FT", color: "#0891B2", shape: "underline" },
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -60,7 +62,8 @@ export function loadSettings(): Settings {
       ...DEFAULT_SETTINGS,
       ...parsed,
       profile:   { ...DEFAULT_SETTINGS.profile, ...(parsed.profile ?? {}) },
-      markTypes: parsed.markTypes && parsed.markTypes.length > 0 ? parsed.markTypes : DEFAULT_MARK_TYPES,
+      markTypes: (parsed.markTypes && parsed.markTypes.length > 0 ? parsed.markTypes : DEFAULT_MARK_TYPES)
+        .map((m) => ({ ...m, shape: (m.shape ?? "tick") as MarkShape })),
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -109,7 +112,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   function addMark() {
     setMarkTypes((prev) => [
       ...prev,
-      { id: `mark-${Date.now()}`, label: "New mark", abbrev: "", color: "#64748B" },
+      { id: `mark-${Date.now()}`, label: "New mark", abbrev: "", color: "#64748B", shape: "tick" },
     ]);
   }
 
@@ -203,51 +206,75 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
               The kinds of marks you allocate, each with its own colour for annotations.
             </p>
 
-            <div className="flex flex-col gap-2.5">
+            <div className="flex flex-col gap-3">
               {markTypes.map((m) => (
-                <div key={m.id} className="flex items-center gap-2.5">
-                  {/* Colour picker */}
-                  <label className="relative shrink-0 cursor-pointer" title="Choose colour">
-                    <span
-                      className="block w-9 h-9 rounded-lg border border-slate-200"
-                      style={{ backgroundColor: m.color }}
-                    />
+                <div key={m.id} className="rounded-xl border border-slate-200 p-3 flex flex-col gap-3">
+                  {/* Top row: shape preview + colour + abbrev + label + remove */}
+                  <div className="flex items-center gap-2.5">
+                    {/* Live preview of the mark */}
+                    <span className="shrink-0 w-9 h-9 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center">
+                      <MarkShapeIcon shape={m.shape} color={m.color} size={20} />
+                    </span>
+
+                    {/* Colour picker */}
+                    <label className="relative shrink-0 cursor-pointer" title="Choose colour">
+                      <span className="block w-9 h-9 rounded-lg border border-slate-200" style={{ backgroundColor: m.color }} />
+                      <input
+                        type="color"
+                        value={m.color}
+                        onChange={(e) => updateMark(m.id, { color: e.target.value })}
+                        className="absolute inset-0 opacity-0 cursor-pointer"
+                      />
+                    </label>
+
+                    {/* Abbreviation */}
                     <input
-                      type="color"
-                      value={m.color}
-                      onChange={(e) => updateMark(m.id, { color: e.target.value })}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
+                      type="text"
+                      value={m.abbrev}
+                      maxLength={3}
+                      onChange={(e) => updateMark(m.id, { abbrev: e.target.value })}
+                      placeholder="—"
+                      className="w-12 text-center rounded-lg border border-slate-200 px-2 py-2 text-[13px] font-bold text-slate-800 outline-none focus:border-[var(--accent-500)]"
                     />
-                  </label>
 
-                  {/* Abbreviation */}
-                  <input
-                    type="text"
-                    value={m.abbrev}
-                    maxLength={3}
-                    onChange={(e) => updateMark(m.id, { abbrev: e.target.value.toUpperCase() })}
-                    placeholder="—"
-                    className="w-12 text-center rounded-lg border border-slate-200 px-2 py-2 text-[13px] font-bold text-slate-800 outline-none focus:border-[var(--accent-500)]"
-                  />
+                    {/* Label */}
+                    <input
+                      type="text"
+                      value={m.label}
+                      onChange={(e) => updateMark(m.id, { label: e.target.value })}
+                      className="flex-1 min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-[13px] text-slate-800 outline-none focus:border-[var(--accent-500)]"
+                    />
 
-                  {/* Label */}
-                  <input
-                    type="text"
-                    value={m.label}
-                    onChange={(e) => updateMark(m.id, { label: e.target.value })}
-                    className="flex-1 min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-[13px] text-slate-800 outline-none focus:border-[var(--accent-500)]"
-                  />
+                    {/* Remove */}
+                    <button
+                      onClick={() => removeMark(m.id)}
+                      className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                      title="Remove"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
 
-                  {/* Remove */}
-                  <button
-                    onClick={() => removeMark(m.id)}
-                    className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                    title="Remove"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
+                  {/* Shape picker */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-slate-400 mr-1">Shape</span>
+                    {MARK_SHAPES.map((s) => (
+                      <button
+                        key={s.key}
+                        onClick={() => updateMark(m.id, { shape: s.key })}
+                        title={s.label}
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center border transition-colors ${
+                          m.shape === s.key
+                            ? "border-[var(--accent-500)] bg-[var(--accent-50)]"
+                            : "border-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        <MarkShapeIcon shape={s.key} color={m.shape === s.key ? m.color : "#94A3B8"} size={16} />
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
