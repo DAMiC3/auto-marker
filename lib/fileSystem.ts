@@ -21,8 +21,9 @@ type PermHandle = {
 type DirIter = {
   entries(): AsyncIterableIterator<[string, FileSystemHandle]>;
 };
+type WriteData = Uint8Array | ArrayBuffer | Blob | string;
 type Writable = {
-  write: (data: BufferSource) => Promise<void>;
+  write: (data: WriteData) => Promise<void>;
   close: () => Promise<void>;
 };
 type WritableHandle = { createWritable: () => Promise<Writable> };
@@ -124,4 +125,41 @@ export async function moveFile(
   await writable.write(await file.arrayBuffer());
   await writable.close();
   await from.removeEntry(name);
+}
+
+/** Write raw bytes to a new file inside `dir`. */
+export async function writeFile(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  data: WriteData
+): Promise<void> {
+  const handle   = await dir.getFileHandle(name, { create: true });
+  const writable = await (handle as unknown as WritableHandle).createWritable();
+  await writable.write(data);
+  await writable.close();
+}
+
+/** Read a single file from the From folder as a File object. */
+export async function readFile(
+  dir: FileSystemDirectoryHandle,
+  name: string
+): Promise<File> {
+  const handle = await dir.getFileHandle(name);
+  return handle.getFile();
+}
+
+/** Open a single-file picker (used for choosing the memo / answer key). */
+export async function pickFile(): Promise<File | null> {
+  const w = window as unknown as {
+    showOpenFilePicker?: (o?: unknown) => Promise<FileSystemFileHandle[]>;
+  };
+  if (!w.showOpenFilePicker) return null;
+  try {
+    const [handle] = await w.showOpenFilePicker({
+      types: [{ description: "Documents", accept: { "application/pdf": [".pdf"], "text/plain": [".txt"] } }],
+    });
+    return handle.getFile();
+  } catch {
+    return null; // user cancelled
+  }
 }

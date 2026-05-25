@@ -15,7 +15,18 @@ import {
   listFolders,
   listFiles,
   moveFile,
+  writeFile,
+  pickFile,
 } from "@/lib/fileSystem";
+import { markPaper, extractMemoText } from "@/lib/markPaper";
+
+interface BatchResult {
+  name: string;
+  total: number;
+  available: number;
+  percentage: number;
+  moved?: boolean;
+}
 
 export default function Home() {
   const [strictness, setStrictness] = useState(7);
@@ -33,9 +44,14 @@ export default function Home() {
   const [toName, setToName]     = useState<string | null>(null);
   const [files, setFiles]       = useState<FileEntry[]>([]);
 
-  const [busy, setBusy]       = useState(false);
-  const [error, setError]     = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [memoFile, setMemoFile] = useState<File | null>(null);
+  const [memoText, setMemoText] = useState("");
+
+  const [busy, setBusy]         = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [error, setError]       = useState<string | null>(null);
+  const [message, setMessage]   = useState<string | null>(null);
+  const [results, setResults]   = useState<BatchResult[]>([]);
 
   // Load saved settings on mount and seed default strictness
   useEffect(() => {
@@ -97,24 +113,57 @@ export default function Home() {
   const toFolder   = folders.find((f) => f.name === toName);
   const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy;
 
+  async function handleChooseMemo() {
+    const file = await pickFile();
+    if (!file) return;
+    setMemoFile(file);
+    setError(null);
+    try {
+      setMemoText(await extractMemoText(file));
+    } catch {
+      setMemoText("");
+    }
+  }
+
   async function handleMark() {
     if (!fromFolder || !toFolder || !canMark) return;
     setBusy(true);
     setError(null);
     setMessage(null);
+    setResults([]);
+
+    const batch = [...files];
+    const done: BatchResult[] = [];
 
     try {
-      const names = files.map((f) => f.name);
-      for (const name of names) {
-        await moveFile(name, fromFolder.handle, toFolder.handle);
+      for (let i = 0; i < batch.length; i++) {
+        const entry = batch[i];
+        setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
+
+        if (entry.name.toLowerCase().endsWith(".pdf")) {
+          const file    = await entry.handle.getFile();
+          const outcome = await markPaper(file, memoText, strictness, settings.markTypes);
+          const marked  = entry.name.replace(/\.pdf$/i, "") + " (marked).pdf";
+          await writeFile(toFolder.handle, marked, outcome.bytes);
+          await fromFolder.handle.removeEntry(entry.name);
+          done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
+        } else {
+          // Non-PDF documents are just moved across (can't be stamped)
+          await moveFile(entry.name, fromFolder.handle, toFolder.handle);
+          done.push({ name: entry.name, total: 0, available: 0, percentage: 0, moved: true });
+        }
       }
-      // Refresh the source listing (now empty)
+
       setFiles(await listFiles(fromFolder.handle));
-      setMessage(`Moved ${names.length} document${names.length === 1 ? "" : "s"} from “${fromName}” to “${toName}”.`);
+      setResults(done);
+      const markedCount = done.filter((d) => !d.moved).length;
+      setMessage(`Done. Marked ${markedCount} paper${markedCount === 1 ? "" : "s"} and moved everything to “${toName}”.`);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Move failed.");
+      setError(e instanceof Error ? e.message : "Marking failed.");
+      setFiles(await listFiles(fromFolder.handle).catch(() => files));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -210,6 +259,22 @@ export default function Home() {
                     </div>
                   </div>
 
+                  {/* Memo / answer key */}
+                  <div>
+                    <label className="block text-[12px] font-medium text-slate-500 mb-1.5">Memo (answer key)</label>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={handleChooseMemo}
+                        className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors"
+                      >
+                        {memoFile ? "Change memo" : "Choose memo"}
+                      </button>
+                      <span className="text-[13px] text-slate-500 truncate">
+                        {memoFile ? memoFile.name : "No memo selected — the AI marks from general knowledge."}
+                      </span>
+                    </div>
+                  </div>
+
                   {/* Document list in the From folder */}
                   <div>
                     <p className="text-[12px] font-medium text-slate-500 mb-2">
@@ -250,7 +315,7 @@ export default function Home() {
             </div>
           )}
 
-          {/* Mark button — moves From → To for now */}
+          {/* Mark button — AI marks each paper, then moves it to the To folder */}
           <button
             onClick={handleMark}
             disabled={!canMark}
@@ -262,18 +327,45 @@ export default function Home() {
           >
             {busy ? (
               <>
-                <span>Moving…</span>
-                <span className="text-[13px] font-normal opacity-70">Transferring documents</span>
+                <span>Marking…</span>
+                <span className="text-[13px] font-normal opacity-70">{progress ?? "Working through the papers"}</span>
               </>
             ) : (
               <>
                 <span>Mark ▶</span>
                 <span className="text-[13px] font-normal opacity-70">
-                  {canMark ? `Move ${files.length} document${files.length === 1 ? "" : "s"} to “${toName}”` : "Pick a From and To folder"}
+                  {canMark
+                    ? `Mark ${files.length} paper${files.length === 1 ? "" : "s"} → “${toName}”`
+                    : "Pick a From and To folder"}
                 </span>
               </>
             )}
           </button>
+
+          {/* Results summary */}
+          {results.length > 0 && (
+            <div className="bg-white rounded-2xl border border-slate-200 px-7 py-6 flex flex-col gap-3">
+              <h2 className="text-[15px] font-semibold text-slate-900">Results</h2>
+              {results.map((r) => (
+                <div key={r.name} className="flex items-center justify-between border border-slate-100 rounded-xl px-4 py-3">
+                  <span className="text-[13px] text-slate-700 truncate mr-3">{r.name}</span>
+                  {r.moved ? (
+                    <span className="text-[12px] text-slate-400 shrink-0">moved</span>
+                  ) : (
+                    <span
+                      className={`text-[13px] font-bold px-3 py-1 rounded-full shrink-0 ${
+                        r.percentage >= 70 ? "bg-green-50 text-green-600"
+                        : r.percentage >= 50 ? "bg-amber-50 text-amber-600"
+                        : "bg-red-50 text-red-600"
+                      }`}
+                    >
+                      {r.total}/{r.available} · {r.percentage}%
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </main>
       </div>
 

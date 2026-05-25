@@ -1,114 +1,107 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import mammoth from "mammoth";
 
-// ── PDF text extraction using pdfjs-dist (Node-compatible) ──────────────────
-async function pdfToText(buf: Buffer): Promise<string> {
-  // Dynamic import keeps build-time tree-shaking happy
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+export const maxDuration = 60;
 
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-  const pages: string[] = [];
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page    = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const text    = content.items
-      .map((item) => ("str" in item ? item.str : ""))
-      .join(" ");
-    pages.push(text);
-  }
-
-  return pages.join("\n");
+interface MarkTypeInput {
+  abbrev: string;
+  label: string;
+  shape: string;
 }
 
-// ── File → plain text ────────────────────────────────────────────────────────
-async function fileToText(file: File): Promise<string> {
-  const name = file.name.toLowerCase();
-  const buf  = Buffer.from(await file.arrayBuffer());
-
-  if (name.endsWith(".pdf")) {
-    return pdfToText(buf);
-  }
-
-  if (name.endsWith(".docx")) {
-    const result = await mammoth.extractRawText({ buffer: buf });
-    return result.value;
-  }
-
-  // Plain text / .txt
-  return buf.toString("utf-8");
+interface MarkRequest {
+  memoText: string;
+  pages: string[];          // base64 PNG, one per page
+  strictness: number;
+  markTypes: MarkTypeInput[];
 }
 
-// ── POST /api/mark ────────────────────────────────────────────────────────────
+// One mark the AI wants stamped on the paper
+interface Annotation {
+  page: number;             // 0-based page index
+  y: number;                // 0 (top) .. 1 (bottom) — vertical position
+  shape: string;            // one of the mark-type shapes
+  marks: string;            // e.g. "3/5"
+  comment: string;          // short margin note
+}
+
+interface MarkResponse {
+  total: number;
+  available: number;
+  percentage: number;
+  annotations: Annotation[];
+  summary: string;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const formData  = await req.formData();
-    const memo      = formData.get("memo")    as File | null;
-    const answers   = formData.get("answers") as File | null;
-    const strictness = Number(formData.get("strictness") ?? 7);
+    const body = (await req.json()) as MarkRequest;
+    const { memoText, pages, strictness, markTypes } = body;
 
-    if (!memo || !answers) {
-      return NextResponse.json(
-        { error: "Both memo and answers files are required." },
-        { status: 400 }
-      );
+    if (!pages || pages.length === 0) {
+      return NextResponse.json({ error: "No pages to mark." }, { status: 400 });
     }
 
-    // ── Mock fallback when no API key ────────────────────────────────────────
+    // ── Mock fallback so the stamp + move pipeline is testable without a key ──
     if (!process.env.ANTHROPIC_API_KEY) {
+      const annotations: Annotation[] = pages.flatMap((_, p) => [
+        { page: p, y: 0.22, shape: "tick",  marks: "5/5", comment: "Correct." },
+        { page: p, y: 0.48, shape: "half",  marks: "1/2", comment: "Partly right." },
+        { page: p, y: 0.74, shape: "cross", marks: "0/3", comment: "Incorrect." },
+      ]);
       return NextResponse.json({
-        score: 18, total: 25, percentage: 72,
-        feedback: [
-          { question: "Question 1", awarded: 4, available: 5,  comment: "Good understanding. Lost 1 mark for incomplete explanation." },
-          { question: "Question 2", awarded: 7, available: 10, comment: "Main points covered but analysis lacked depth." },
-          { question: "Question 3", awarded: 7, available: 10, comment: "Strong answer. Well structured with relevant examples." },
-        ],
-        strictnessUsed: strictness,
-        reasoning: `Mock result — add ANTHROPIC_API_KEY to .env.local to enable real marking. Strictness: ${strictness}/10.`,
-      });
+        total: 6, available: 10 * pages.length, percentage: 60,
+        annotations,
+        summary: `Mock marking — add ANTHROPIC_API_KEY to enable real AI marking. Strictness ${strictness}/10.`,
+      } satisfies MarkResponse);
     }
 
-    // ── Extract text from uploaded files ─────────────────────────────────────
-    const [memoText, answersText] = await Promise.all([
-      fileToText(memo),
-      fileToText(answers),
-    ]);
-
-    // ── Call Claude ───────────────────────────────────────────────────────────
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    const systemPrompt = `You are an expert academic marker. You mark student answers strictly and fairly.
-Strictness level: ${strictness}/10 (1=very lenient, partial credit freely given; 10=very strict, full marks only for complete correct answers).
-Always show your reasoning so the lecturer can trust and override your marks.
-Respond ONLY with valid JSON matching this exact shape:
+    const shapeList = markTypes.map((m) => `"${m.shape}" (${m.abbrev} = ${m.label})`).join(", ");
+
+    const systemPrompt = `You are an experienced university examiner marking a student's test paper.
+You are given the MEMO (answer key) and images of each page of the student's answers.
+Mark like a real human marker: judge each answer against the memo and decide marks.
+
+Strictness: ${strictness}/10 (1 = very lenient, generous partial credit; 10 = very strict).
+
+For every answer you assess, produce one annotation describing the mark to stamp on the page:
+- "page": 0-based index of the page the answer is on
+- "y": vertical position of that answer on the page, 0.0 (very top) to 1.0 (very bottom)
+- "shape": the mark symbol to draw, one of: ${shapeList}
+- "marks": awarded over available, e.g. "3/5"
+- "comment": a very short margin note (max ~8 words)
+
+Respond ONLY with valid JSON in exactly this shape:
 {
-  "score": <total awarded>,
-  "total": <total available>,
+  "total": <sum of awarded marks>,
+  "available": <sum of available marks>,
   "percentage": <rounded integer>,
-  "feedback": [
-    { "question": "Question X", "awarded": <n>, "available": <n>, "comment": "<reasoning>" }
-  ],
-  "strictnessUsed": ${strictness},
-  "reasoning": "<overall marking rationale>"
+  "annotations": [ { "page": 0, "y": 0.3, "shape": "tick", "marks": "3/5", "comment": "Good method" } ],
+  "summary": "<2-3 sentence overall assessment>"
 }`;
 
-    const userPrompt = `MEMO (answer key):\n${memoText}\n\n---\n\nSTUDENT ANSWERS:\n${answersText}`;
+    const content: Anthropic.MessageParam["content"] = [
+      { type: "text", text: `MEMO (answer key):\n${memoText || "(none provided)"}\n\nStudent answer pages follow, in order.` },
+      ...pages.map((data) => ({
+        type: "image" as const,
+        source: { type: "base64" as const, media_type: "image/png" as const, data },
+      })),
+    ];
 
     const message = await client.messages.create({
       model: "claude-opus-4-5",
-      max_tokens: 2048,
+      max_tokens: 4096,
       system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
+      messages: [{ role: "user", content }],
     });
 
     const raw     = (message.content[0] as { type: string; text: string }).text;
-    // Strip any markdown code fences Claude might add
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-    const result  = JSON.parse(cleaned);
+    const result  = JSON.parse(cleaned) as MarkResponse;
 
     return NextResponse.json(result);
-
   } catch (err) {
     console.error("Mark route error:", err);
     return NextResponse.json({ error: "Marking failed. Check server logs." }, { status: 500 });
