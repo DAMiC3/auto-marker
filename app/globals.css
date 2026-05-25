@@ -7,3 +7,52 @@
 html, body {
   height: 100%;
 }
+
+/* ── Accent theme variables ──────────────────────────────────────────────
+   Default = indigo. Switched at runtime via [data-accent] on <html>.
+   Shades mirror Tailwind's palette (50 / 100 / 400 / 500 / 600 / 700). */
+:root,
+[data-accent="indigo"] {
+  --accent-50:  #eef2ff;
+  --accent-100: #e0e7ff;
+  --accent-400: #818cf8;
+  --accent-500: #6366f1;
+  --accent-600: #4f46e5;
+  --accent-700: #4338ca;
+}
+
+[data-accent="violet"] {
+  --accent-50:  #f5f3ff;
+  --accent-100: #ede9fe;
+  --accent-400: #a78bfa;
+  --accent-500: #8b5cf6;
+  --accent-600: #7c3aed;
+  --accent-700: #6d28d9;
+}
+
+[data-accent="emerald"] {
+  --accent-50:  #ecfdf5;
+  --accent-100: #d1fae5;
+  --accent-400: #34d399;
+  --accent-500: #10b981;
+  --accent-600: #059669;
+  --accent-700: #047857;
+}
+
+[data-accent="rose"] {
+  --accent-50:  #fff1f2;
+  --accent-100: #ffe4e6;
+  --accent-400: #fb7185;
+  --accent-500: #f43f5e;
+  --accent-600: #e11d48;
+  --accent-700: #be123c;
+}
+
+[data-accent="amber"] {
+  --accent-50:  #fffbeb;
+  --accent-100: #fef3c7;
+  --accent-400: #fbbf24;
+  --accent-500: #f59e0b;
+  --accent-600: #d97706;
+  --accent-700: #b45309;
+}

@@ -16,7 +16,7 @@ export default function Sidebar() {
     <aside className="w-[260px] shrink-0 flex flex-col h-full bg-[#0E1525]">
       {/* Logo */}
       <div className="h-16 flex items-center gap-3 px-5 bg-[#090E1A]">
-        <div className="w-7 h-7 rounded-[7px] bg-indigo-600" />
+        <div className="w-7 h-7 rounded-[7px] bg-[var(--accent-600)]" />
         <span className="text-[#EFF4FE] font-bold text-base">AutoMark</span>
       </div>
 
@@ -31,13 +31,13 @@ export default function Sidebar() {
             key={f.name}
             className={`flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors ${
               f.active
-                ? "bg-indigo-600/20 text-[#EFF4FE] font-medium"
+                ? "bg-[var(--accent-600)]/20 text-[#EFF4FE] font-medium"
                 : "text-[#9BAECC] hover:bg-white/5"
             }`}
           >
             <span
               className={`w-2 h-2 rounded-full shrink-0 ${
-                f.active ? "bg-indigo-400" : "bg-[#657BAA]"
+                f.active ? "bg-[var(--accent-400)]" : "bg-[#657BAA]"
               }`}
             />
             {f.name}
@@ -64,7 +64,7 @@ export default function Sidebar() {
       {/* User row */}
       <div className="px-3 pb-5">
         <div className="flex items-center gap-3 px-3 py-3 rounded-lg bg-white/[0.04]">
-          <div className="w-8 h-8 rounded-full bg-indigo-600 shrink-0" />
+          <div className="w-8 h-8 rounded-full bg-[var(--accent-600)] shrink-0" />
           <div className="min-w-0">
             <p className="text-[13px] font-medium text-[#EFF4FE] truncate">
               Michael Bernard

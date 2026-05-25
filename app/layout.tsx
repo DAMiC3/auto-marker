@@ -20,6 +20,7 @@ export default function RootLayout({
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#4F46E5" />
         <script dangerouslySetInnerHTML={{ __html: `if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js')` }} />
+        <script dangerouslySetInnerHTML={{ __html: `try{var s=JSON.parse(localStorage.getItem('automark.settings')||'{}');if(s.accent)document.documentElement.dataset.accent=s.accent;}catch(e){}` }} />
       </head>
       <body className="h-full font-sans antialiased">{children}</body>
     </html>

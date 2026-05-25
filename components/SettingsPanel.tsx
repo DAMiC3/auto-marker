@@ -64,6 +64,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   function handleSave() {
     const next: Settings = { defaultStrictness: strictness, accent };
     saveSettings(next);
+    document.documentElement.dataset.accent = accent;
     onSave(next);
     onClose();
   }
@@ -105,7 +106,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
               <label className="text-[14px] font-semibold text-slate-800">
                 Default marking strictness
               </label>
-              <span className="text-[13px] font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
+              <span className="text-[13px] font-bold text-[var(--accent-600)] bg-[var(--accent-50)] px-3 py-1 rounded-full">
                 {strictness} / 10
               </span>
             </div>
@@ -115,7 +116,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
               max={10}
               value={strictness}
               onChange={(e) => setStrictness(Number(e.target.value))}
-              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-indigo-600 bg-slate-200"
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--accent-600)] bg-slate-200"
             />
             <div className="flex justify-between mt-2">
               <span className="text-[12px] text-slate-400">Lenient</span>
@@ -174,7 +175,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 rounded-xl py-3 text-[14px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+            className="flex-1 rounded-xl py-3 text-[14px] font-semibold text-white bg-[var(--accent-600)] hover:bg-[var(--accent-700)] transition-colors"
           >
             Save changes
           </button>

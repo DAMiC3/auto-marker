@@ -12,7 +12,7 @@ export default function StrictnessSlider({ value, onChange }: Props) {
         <h2 className="text-[15px] font-semibold text-slate-900">
           Marking Strictness
         </h2>
-        <span className="text-[13px] font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
+        <span className="text-[13px] font-bold text-[var(--accent-600)] bg-[var(--accent-50)] px-3 py-1 rounded-full">
           {value} / 10
         </span>
       </div>
@@ -23,7 +23,7 @@ export default function StrictnessSlider({ value, onChange }: Props) {
         max={10}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-indigo-600 bg-slate-200"
+        className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--accent-600)] bg-slate-200"
       />
 
       <div className="flex justify-between mt-2">
