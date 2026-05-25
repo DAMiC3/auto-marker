@@ -1,29 +1,38 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import StrictnessSlider from "@/components/StrictnessSlider";
-import UploadZone from "@/components/UploadZone";
 import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings } from "@/components/SettingsPanel";
-
-interface MarkResult {
-  score: number;
-  total: number;
-  percentage: number;
-  feedback: { question: string; awarded: number; available: number; comment: string }[];
-  strictnessUsed: number;
-  reasoning: string;
-}
+import {
+  type Folder,
+  type FileEntry,
+  isSupported,
+  pickRoot,
+  loadSavedRoot,
+  hasPermission,
+  ensurePermission,
+  listFolders,
+  listFiles,
+  moveFile,
+} from "@/lib/fileSystem";
 
 export default function Home() {
   const [strictness, setStrictness] = useState(7);
-  const [memo, setMemo] = useState<File | null>(null);
-  const [answers, setAnswers] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<MarkResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [settings, setSettings]     = useState<Settings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // ── File system state ──────────────────────────────────────────────────
+  const [supported]  = useState(() => isSupported());
+  const [root, setRoot]       = useState<FileSystemDirectoryHandle | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [fromName, setFromName] = useState<string | null>(null);
+  const [toName, setToName]     = useState<string | null>(null);
+  const [files, setFiles]       = useState<FileEntry[]>([]);
+
+  const [busy, setBusy]       = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   // Load saved settings on mount and seed default strictness
   useEffect(() => {
@@ -32,41 +41,89 @@ export default function Home() {
     setStrictness(s.defaultStrictness);
   }, []);
 
-  const canMark = memo !== null && answers !== null;
+  // Try to silently reconnect to a previously chosen folder
+  useEffect(() => {
+    (async () => {
+      if (!isSupported()) return;
+      const saved = await loadSavedRoot();
+      if (saved && (await hasPermission(saved))) {
+        setRoot(saved);
+        setFolders(await listFolders(saved));
+      }
+    })().catch(() => {});
+  }, []);
+
+  // Connect (or change) the workspace folder — needs a user gesture
+  const handleConnect = useCallback(async () => {
+    setError(null);
+    setMessage(null);
+    try {
+      const handle = await pickRoot();
+      if (!(await ensurePermission(handle))) {
+        setError("Permission to access the folder was not granted.");
+        return;
+      }
+      setRoot(handle);
+      setFolders(await listFolders(handle));
+      setFromName(null);
+      setToName(null);
+      setFiles([]);
+    } catch (e: unknown) {
+      // User cancelling the picker throws — ignore that case quietly
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setError(e instanceof Error ? e.message : "Could not open the folder.");
+    }
+  }, []);
+
+  // Load documents whenever the "From" folder changes
+  useEffect(() => {
+    (async () => {
+      const folder = folders.find((f) => f.name === fromName);
+      if (!folder) { setFiles([]); return; }
+      setFiles(await listFiles(folder.handle));
+    })().catch((e) => setError(e instanceof Error ? e.message : "Could not read folder."));
+  }, [fromName, folders]);
+
+  const fromFolder = folders.find((f) => f.name === fromName);
+  const toFolder   = folders.find((f) => f.name === toName);
+  const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy;
 
   async function handleMark() {
-    if (!canMark) return;
-    setLoading(true);
+    if (!fromFolder || !toFolder || !canMark) return;
+    setBusy(true);
     setError(null);
-    setResult(null);
+    setMessage(null);
 
     try {
-      const fd = new FormData();
-      fd.append("memo", memo);
-      fd.append("answers", answers);
-      fd.append("strictness", String(strictness));
-
-      const res = await fetch("/api/mark", { method: "POST", body: fd });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Marking failed");
-      setResult(await res.json());
+      const names = files.map((f) => f.name);
+      for (const name of names) {
+        await moveFile(name, fromFolder.handle, toFolder.handle);
+      }
+      // Refresh the source listing (now empty)
+      setFiles(await listFiles(fromFolder.handle));
+      setMessage(`Moved ${names.length} document${names.length === 1 ? "" : "s"} from “${fromName}” to “${toName}”.`);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
+      setError(e instanceof Error ? e.message : "Move failed.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   return (
     <div className="flex h-full bg-[#F3F6FB]">
-      <Sidebar />
+      <Sidebar
+        folders={folders}
+        activeFolder={fromName}
+        connected={!!root}
+        onConnect={handleConnect}
+        onSelectFolder={setFromName}
+      />
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shrink-0">
-          <h1 className="text-[18px] font-semibold text-slate-900">
-            Mark New Batch
-          </h1>
+          <h1 className="text-[18px] font-semibold text-slate-900">Mark New Batch</h1>
           <button
             onClick={() => setSettingsOpen(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 text-slate-600 text-[13px] font-medium hover:bg-slate-200 transition-colors"
@@ -82,130 +139,139 @@ export default function Home() {
         {/* Body */}
         <main className="flex-1 overflow-y-auto px-8 py-8 flex flex-col gap-6">
 
-          {/* Strictness slider */}
           <StrictnessSlider value={strictness} onChange={setStrictness} />
 
-          {/* Upload card */}
-          <div className="bg-white rounded-2xl border border-slate-200 px-7 py-6">
-            <h2 className="text-[15px] font-semibold text-slate-900 mb-5">
-              Upload Files
-            </h2>
+          {/* Not supported notice */}
+          {!supported && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-5 py-4 text-[14px]">
+              Your browser doesn’t support direct folder access. Use Chrome or Edge to connect your files.
+            </div>
+          )}
 
-            <div className="flex items-center gap-4">
-              <UploadZone
-                label="Upload Memo"
-                sublabel="PDF, DOCX, TXT"
-                file={memo}
-                onFile={setMemo}
-                accent
-              />
-
-              {/* Arrow */}
-              <div className="shrink-0 flex items-center justify-center w-8">
-                <svg className="w-6 h-6 text-[var(--accent-400)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
+          {/* Files workspace */}
+          {supported && (
+            <div className="bg-white rounded-2xl border border-slate-200 px-7 py-6">
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-[15px] font-semibold text-slate-900">Files</h2>
+                {!root && (
+                  <button
+                    onClick={handleConnect}
+                    className="px-4 py-2 rounded-lg bg-[var(--accent-600)] hover:bg-[var(--accent-700)] text-white text-[13px] font-medium transition-colors"
+                  >
+                    Connect your files
+                  </button>
+                )}
               </div>
 
-              <UploadZone
-                label="Upload marked files here"
-                sublabel="PDF, DOCX, TXT"
-                file={answers}
-                onFile={setAnswers}
-              />
-            </div>
+              {!root ? (
+                <p className="text-[14px] text-slate-500">
+                  Connect a folder on your computer to get started. Subfolders inside it
+                  become your classes — pick where documents come <em>from</em> and where
+                  they go <em>to</em>, then hit MERK.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-5">
+                  {/* From / To selectors */}
+                  <div className="flex items-end gap-4">
+                    <div className="flex-1">
+                      <label className="block text-[12px] font-medium text-slate-500 mb-1.5">From folder</label>
+                      <select
+                        value={fromName ?? ""}
+                        onChange={(e) => setFromName(e.target.value || null)}
+                        className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-[14px] text-slate-800 bg-white outline-none focus:border-[var(--accent-500)]"
+                      >
+                        <option value="">Select…</option>
+                        {folders.map((f) => (
+                          <option key={f.name} value={f.name}>{f.name}</option>
+                        ))}
+                      </select>
+                    </div>
 
-            <div className="mt-3 text-right">
-              <button className="text-[13px] text-[var(--accent-500)] hover:text-[var(--accent-700)] transition-colors">
-                or choose from archive
-              </button>
-            </div>
-          </div>
+                    <div className="shrink-0 pb-2.5">
+                      <svg className="w-6 h-6 text-[var(--accent-400)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
 
-          {/* Error */}
+                    <div className="flex-1">
+                      <label className="block text-[12px] font-medium text-slate-500 mb-1.5">To folder</label>
+                      <select
+                        value={toName ?? ""}
+                        onChange={(e) => setToName(e.target.value || null)}
+                        className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-[14px] text-slate-800 bg-white outline-none focus:border-[var(--accent-500)]"
+                      >
+                        <option value="">Select…</option>
+                        {folders.map((f) => (
+                          <option key={f.name} value={f.name} disabled={f.name === fromName}>{f.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Document list in the From folder */}
+                  <div>
+                    <p className="text-[12px] font-medium text-slate-500 mb-2">
+                      Documents in {fromName ? `“${fromName}”` : "the selected folder"}
+                      {fromFolder && ` (${files.length})`}
+                    </p>
+                    {!fromFolder ? (
+                      <p className="text-[13px] text-slate-400">Pick a “From” folder to see its documents.</p>
+                    ) : files.length === 0 ? (
+                      <p className="text-[13px] text-slate-400">This folder has no documents.</p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
+                        {files.map((f) => (
+                          <div key={f.name} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 text-[13px] text-slate-700">
+                            <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="truncate">{f.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Error / success banners */}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-5 py-4 text-[14px]">
               {error}
             </div>
           )}
+          {message && (
+            <div className="bg-green-50 border border-green-200 text-green-700 rounded-xl px-5 py-4 text-[14px]">
+              {message}
+            </div>
+          )}
 
-          {/* MERK button */}
+          {/* MERK button — moves From → To for now */}
           <button
             onClick={handleMark}
-            disabled={!canMark || loading}
+            disabled={!canMark}
             className={`w-full rounded-2xl py-5 flex flex-col items-center gap-1 font-bold text-[18px] text-white transition-all ${
-              canMark && !loading
+              canMark
                 ? "bg-[var(--accent-600)] hover:bg-[var(--accent-700)] shadow-lg shadow-[color:var(--accent-100)]"
                 : "bg-slate-300 cursor-not-allowed"
             }`}
           >
-            {loading ? (
+            {busy ? (
               <>
-                <span>Marking…</span>
-                <span className="text-[13px] font-normal opacity-70">This may take a moment</span>
+                <span>Moving…</span>
+                <span className="text-[13px] font-normal opacity-70">Transferring documents</span>
               </>
             ) : (
               <>
                 <span>MERK ▶</span>
-                <span className="text-[13px] font-normal opacity-70">AI-powered marking</span>
+                <span className="text-[13px] font-normal opacity-70">
+                  {canMark ? `Move ${files.length} document${files.length === 1 ? "" : "s"} to “${toName}”` : "Pick a From and To folder"}
+                </span>
               </>
             )}
           </button>
-
-          {/* Results */}
-          {result && (
-            <div className="bg-white rounded-2xl border border-slate-200 px-7 py-6 flex flex-col gap-5">
-              {/* Score banner */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[13px] text-slate-500">Total Score</p>
-                  <p className="text-[32px] font-bold text-slate-900">
-                    {result.score}{" "}
-                    <span className="text-[18px] font-normal text-slate-400">
-                      / {result.total}
-                    </span>
-                  </p>
-                </div>
-                <div className={`text-[28px] font-bold px-5 py-3 rounded-xl ${
-                  result.percentage >= 70
-                    ? "bg-green-50 text-green-600"
-                    : result.percentage >= 50
-                    ? "bg-amber-50 text-amber-600"
-                    : "bg-red-50 text-red-600"
-                }`}>
-                  {result.percentage}%
-                </div>
-              </div>
-
-              {/* Feedback rows */}
-              <div className="flex flex-col gap-3">
-                {result.feedback.map((fb) => (
-                  <div key={fb.question} className="border border-slate-100 rounded-xl px-5 py-4">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[14px] font-semibold text-slate-800">{fb.question}</span>
-                      <span className="text-[13px] font-bold text-[var(--accent-600)]">
-                        {fb.awarded}/{fb.available}
-                      </span>
-                    </div>
-                    <p className="text-[13px] text-slate-500">{fb.comment}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Reasoning */}
-              <div className="bg-slate-50 rounded-xl px-5 py-4">
-                <p className="text-[12px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
-                  AI Reasoning
-                </p>
-                <p className="text-[13px] text-slate-600">{result.reasoning}</p>
-              </div>
-
-              {/* Override note */}
-              <p className="text-[12px] text-slate-400 text-center">
-                Review marks above before finalising. You can override any score manually.
-              </p>
-            </div>
-          )}
         </main>
       </div>
 

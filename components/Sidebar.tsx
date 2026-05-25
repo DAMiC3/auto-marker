@@ -1,17 +1,22 @@
 "use client";
 
-const files = [
-  { name: "Graad 8 — Afrikaans", active: true },
-  { name: "Graad 9 — Afrikaans", active: false },
-  { name: "Graad 10 — Afrikaans", active: false },
-];
+import type { Folder } from "@/lib/fileSystem";
 
-const recent = [
-  "Wiskunde Toets — 8A",
-  "Afr Opstel — 9B",
-];
+interface Props {
+  folders: Folder[];
+  activeFolder: string | null;
+  connected: boolean;
+  onConnect: () => void;
+  onSelectFolder: (name: string) => void;
+}
 
-export default function Sidebar() {
+export default function Sidebar({
+  folders,
+  activeFolder,
+  connected,
+  onConnect,
+  onSelectFolder,
+}: Props) {
   return (
     <aside className="w-[260px] shrink-0 flex flex-col h-full bg-[#0E1525]">
       {/* Logo */}
@@ -22,43 +27,58 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 pt-5 flex flex-col gap-1 overflow-y-auto">
-        <p className="text-[10px] font-semibold tracking-[1.5px] text-[#657BAA] px-2 mb-1">
-          FILES
-        </p>
+        <div className="flex items-center justify-between px-2 mb-1">
+          <p className="text-[10px] font-semibold tracking-[1.5px] text-[#657BAA]">
+            FILES
+          </p>
+          {connected && (
+            <button
+              onClick={onConnect}
+              className="text-[10px] text-[#657BAA] hover:text-[#9BAECC] transition-colors"
+              title="Connect a different folder"
+            >
+              change
+            </button>
+          )}
+        </div>
 
-        {files.map((f) => (
+        {!connected ? (
           <button
-            key={f.name}
-            className={`flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors ${
-              f.active
-                ? "bg-[var(--accent-600)]/20 text-[#EFF4FE] font-medium"
-                : "text-[#9BAECC] hover:bg-white/5"
-            }`}
+            onClick={onConnect}
+            className="flex items-center gap-2 w-full text-left px-3 py-2.5 rounded-lg text-[13px] text-[#EFF4FE] bg-[var(--accent-600)]/20 hover:bg-[var(--accent-600)]/30 transition-colors"
           >
-            <span
-              className={`w-2 h-2 rounded-full shrink-0 ${
-                f.active ? "bg-[var(--accent-400)]" : "bg-[#657BAA]"
-              }`}
-            />
-            {f.name}
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+            </svg>
+            Connect your files
           </button>
-        ))}
-
-        <div className="my-3 border-t border-white/[0.07]" />
-
-        <p className="text-[10px] font-semibold tracking-[1.5px] text-[#657BAA] px-2 mb-1">
-          RECENT
-        </p>
-
-        {recent.map((r) => (
-          <button
-            key={r}
-            className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg text-[13px] text-[#9BAECC] hover:bg-white/5 transition-colors"
-          >
-            <span className="w-2 h-2 rounded-full shrink-0 bg-[#657BAA]" />
-            {r}
-          </button>
-        ))}
+        ) : folders.length === 0 ? (
+          <p className="px-3 py-2 text-[12px] text-[#657BAA]">
+            No subfolders found in the connected folder.
+          </p>
+        ) : (
+          folders.map((f) => {
+            const active = f.name === activeFolder;
+            return (
+              <button
+                key={f.name}
+                onClick={() => onSelectFolder(f.name)}
+                className={`flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg text-[13px] transition-colors ${
+                  active
+                    ? "bg-[var(--accent-600)]/20 text-[#EFF4FE] font-medium"
+                    : "text-[#9BAECC] hover:bg-white/5"
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    active ? "bg-[var(--accent-400)]" : "bg-[#657BAA]"
+                  }`}
+                />
+                <span className="truncate">{f.name}</span>
+              </button>
+            );
+          })
+        )}
       </nav>
 
       {/* User row */}
