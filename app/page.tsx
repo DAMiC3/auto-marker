@@ -124,8 +124,11 @@ export default function Home() {
         folders={folders}
         activeFolder={fromName}
         connected={!!root}
+        profileName={settings.profile.name}
+        profileSubject={settings.profile.subject}
         onConnect={handleConnect}
         onSelectFolder={setFromName}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       {/* Main content */}
