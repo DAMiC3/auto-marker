@@ -23,7 +23,10 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ── File system state ──────────────────────────────────────────────────
-  const [supported]  = useState(() => isSupported());
+  // Assume supported during SSR/first render to avoid a hydration mismatch;
+  // the real check runs after mount.
+  const [mounted, setMounted]     = useState(false);
+  const [supported, setSupported] = useState(true);
   const [root, setRoot]       = useState<FileSystemDirectoryHandle | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [fromName, setFromName] = useState<string | null>(null);
@@ -39,6 +42,12 @@ export default function Home() {
     const s = loadSettings();
     setSettings(s);
     setStrictness(s.defaultStrictness);
+  }, []);
+
+  // Detect support after mount (avoids SSR/client mismatch)
+  useEffect(() => {
+    setMounted(true);
+    setSupported(isSupported());
   }, []);
 
   // Try to silently reconnect to a previously chosen folder
@@ -142,7 +151,7 @@ export default function Home() {
           <StrictnessSlider value={strictness} onChange={setStrictness} />
 
           {/* Not supported notice */}
-          {!supported && (
+          {mounted && !supported && (
             <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-5 py-4 text-[14px]">
               Your browser doesn’t support direct folder access. Use Chrome or Edge to connect your files.
             </div>
