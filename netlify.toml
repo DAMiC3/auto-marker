@@ -1,0 +1,8 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+# Official Next.js runtime for Netlify — handles App Router, API routes,
+# proxy (middleware), and server-rendered pages automatically.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
