@@ -19,6 +19,7 @@ import {
   pickFile,
 } from "@/lib/fileSystem";
 import { markPaper, extractMemoText } from "@/lib/markPaper";
+import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
 
 interface BatchResult {
   name: string;
@@ -44,8 +45,10 @@ export default function Home() {
   const [toName, setToName]     = useState<string | null>(null);
   const [files, setFiles]       = useState<FileEntry[]>([]);
 
-  const [memoFile, setMemoFile] = useState<File | null>(null);
-  const [memoText, setMemoText] = useState("");
+  // Memo archive
+  const [memos, setMemos]                 = useState<Memo[]>([]);
+  const [selectedMemoId, setSelectedMemoId] = useState<string | null>(null);
+  const memoText = memos.find((m) => m.id === selectedMemoId)?.text ?? "";
 
   const [busy, setBusy]         = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -64,6 +67,16 @@ export default function Home() {
   useEffect(() => {
     setMounted(true);
     setSupported(isSupported());
+  }, []);
+
+  // Load the memo archive on mount
+  useEffect(() => {
+    listMemos()
+      .then((m) => {
+        setMemos(m);
+        if (m.length > 0) setSelectedMemoId((cur) => cur ?? m[0].id);
+      })
+      .catch(() => {});
   }, []);
 
   // Try to silently reconnect to a previously chosen folder
@@ -113,16 +126,27 @@ export default function Home() {
   const toFolder   = folders.find((f) => f.name === toName);
   const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy;
 
-  async function handleChooseMemo() {
+  async function handleAddMemo() {
     const file = await pickFile();
     if (!file) return;
-    setMemoFile(file);
     setError(null);
     try {
-      setMemoText(await extractMemoText(file));
-    } catch {
-      setMemoText("");
+      const text = await extractMemoText(file).catch(() => "");
+      const memo: Memo = { id: `memo-${Date.now()}`, name: file.name, addedAt: Date.now(), text, blob: file };
+      await saveMemo(memo);
+      const updated = await listMemos();
+      setMemos(updated);
+      setSelectedMemoId(memo.id);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not add memo.");
     }
+  }
+
+  async function handleDeleteMemo(id: string) {
+    await deleteMemo(id);
+    const updated = await listMemos();
+    setMemos(updated);
+    if (selectedMemoId === id) setSelectedMemoId(updated[0]?.id ?? null);
   }
 
   async function handleMark() {
@@ -259,20 +283,53 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Memo / answer key */}
+                  {/* Memo archive */}
                   <div>
                     <label className="block text-[12px] font-medium text-slate-500 mb-1.5">Memo (answer key)</label>
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={handleChooseMemo}
-                        className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors"
-                      >
-                        {memoFile ? "Change memo" : "Choose memo"}
-                      </button>
-                      <span className="text-[13px] text-slate-500 truncate">
-                        {memoFile ? memoFile.name : "No memo selected — the AI marks from general knowledge."}
-                      </span>
-                    </div>
+                    {memos.length === 0 ? (
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={handleAddMemo}
+                          className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors"
+                        >
+                          + Add memo
+                        </button>
+                        <span className="text-[13px] text-slate-400">
+                          Your memo archive is empty. Add one to reuse it across batches.
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={selectedMemoId ?? ""}
+                          onChange={(e) => setSelectedMemoId(e.target.value || null)}
+                          className="flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-[14px] text-slate-800 bg-white outline-none focus:border-[var(--accent-500)]"
+                        >
+                          <option value="">No memo (mark from general knowledge)</option>
+                          {memos.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={handleAddMemo}
+                          className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors shrink-0"
+                          title="Add a memo to the archive"
+                        >
+                          + Add
+                        </button>
+                        {selectedMemoId && (
+                          <button
+                            onClick={() => handleDeleteMemo(selectedMemoId)}
+                            className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors shrink-0"
+                            title="Remove this memo from the archive"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Document list in the From folder */}
