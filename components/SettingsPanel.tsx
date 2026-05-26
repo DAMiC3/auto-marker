@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import MarkShapeIcon, { type MarkShape, MARK_SHAPES } from "@/components/MarkShapeIcon";
+import { createClient } from "@/lib/supabase/client";
 
 export interface MarkType {
   id: string;
@@ -132,7 +133,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   }
 
   async function handleSignOut() {
-    await fetch("/api/auth", { method: "DELETE" });
+    await createClient().auth.signOut();
     router.push("/login");
     router.refresh();
   }

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Folder } from "@/lib/fileSystem";
+import { createClient } from "@/lib/supabase/client";
 
 interface Props {
   folders: Folder[];
@@ -30,7 +31,7 @@ export default function Sidebar({
 
   async function handleSignOut() {
     setMenuOpen(false);
-    await fetch("/api/auth", { method: "DELETE" });
+    await createClient().auth.signOut();
     router.push("/login");
     router.refresh();
   }

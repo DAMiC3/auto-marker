@@ -1,13 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
-const PUBLIC_PATHS = ["/login", "/api/auth"];
+const url     = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
-export function proxy(req: NextRequest) {
+const PUBLIC_PREFIXES = ["/login", "/auth"];
+
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Let public paths and static assets through
+  // Static assets / PWA files — always allow
   if (
-    PUBLIC_PATHS.some((p) => pathname.startsWith(p)) ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icon") ||
     pathname === "/manifest.json" ||
@@ -17,21 +20,45 @@ export function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // Check auth cookie
-  const token = req.cookies.get("am_auth")?.value;
-  if (token && token === process.env.AUTH_SECRET) {
-    return NextResponse.next();
+  // If Supabase isn't configured (e.g. local dev without env), don't gate.
+  if (!url || !anonKey) return NextResponse.next();
+
+  // Bind a Supabase client to the request/response cookies so the session
+  // token can be refreshed on each request.
+  let res = NextResponse.next({ request: req });
+  const supabase = createServerClient(url, anonKey, {
+    cookies: {
+      getAll() {
+        return req.cookies.getAll();
+      },
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+        res = NextResponse.next({ request: req });
+        cookiesToSet.forEach(({ name, value, options }) =>
+          res.cookies.set(name, value, options)
+        );
+      },
+    },
+  });
+
+  const { data: { user } } = await supabase.auth.getUser();
+  const isPublic = PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
+
+  // Not signed in and trying to reach a protected page → login
+  if (!user && !isPublic) {
+    const loginUrl = req.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    return NextResponse.redirect(loginUrl);
   }
 
-  // No AUTH_SECRET set → dev mode, allow through
-  if (!process.env.AUTH_SECRET) {
-    return NextResponse.next();
+  // Already signed in but on the login page → home
+  if (user && pathname === "/login") {
+    const home = req.nextUrl.clone();
+    home.pathname = "/";
+    return NextResponse.redirect(home);
   }
 
-  // Redirect to login
-  const loginUrl = req.nextUrl.clone();
-  loginUrl.pathname = "/login";
-  return NextResponse.redirect(loginUrl);
+  return res;
 }
 
 export const config = {
