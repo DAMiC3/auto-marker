@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { createClient as createUserClient } from "@/lib/supabase/server";
+import { createServiceClient, isServiceConfigured } from "@/lib/supabase/service";
+import { costZar, type TokenUsage } from "@/lib/cost";
 
 export const maxDuration = 60;
 
@@ -101,6 +104,34 @@ export async function POST(req: NextRequest) {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const model  = MODELS[quality] ?? MODELS.standard;
 
+    // ── Metering: identify the user and check their allowance ────────────────
+    // Gracefully no-ops if the service role key isn't configured yet.
+    let userId: string | null = null;
+    if (isServiceConfigured()) {
+      try {
+        const sb = await createUserClient();
+        const { data: { user } } = await sb.auth.getUser();
+        userId = user?.id ?? null;
+        if (userId) {
+          const svc = createServiceClient();
+          const { data: profile } = await svc
+            .from("profiles")
+            .select("plan, allowance_cap_zar, used_zar")
+            .eq("id", userId)
+            .single();
+          if (
+            profile &&
+            profile.plan !== "none" &&
+            Number(profile.used_zar) >= Number(profile.allowance_cap_zar)
+          ) {
+            return NextResponse.json({ error: "allowance_exhausted" }, { status: 402 });
+          }
+        }
+      } catch (e) {
+        console.error("Metering pre-check failed (continuing):", e);
+      }
+    }
+
     // System prompt is constant across a batch → cache it.
     const system: Anthropic.TextBlockParam[] = [
       { type: "text", text: buildSystemPrompt(strictness, markTypes), cache_control: { type: "ephemeral" } },
@@ -130,6 +161,23 @@ export async function POST(req: NextRequest) {
     const raw     = (message.content[0] as { type: string; text: string }).text;
     const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
     const result  = JSON.parse(cleaned) as MarkResponse;
+
+    // ── Metering: record the real cost of this run ───────────────────────────
+    if (isServiceConfigured() && userId) {
+      try {
+        const cost = costZar(model, message.usage as TokenUsage);
+        const svc  = createServiceClient();
+        await svc.rpc("add_usage", {
+          p_user: userId,
+          p_cost: cost,
+          p_papers: pages.length,
+          p_tier: quality,
+          p_file: null,
+        });
+      } catch (e) {
+        console.error("Usage recording failed (continuing):", e);
+      }
+    }
 
     return NextResponse.json(result);
   } catch (err) {

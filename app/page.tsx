@@ -184,11 +184,18 @@ export default function Home() {
       const markedCount = done.filter((d) => !d.moved).length;
       setMessage(`Done. Marked ${markedCount} paper${markedCount === 1 ? "" : "s"} and moved everything to “${toName}”.`);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Marking failed.");
+      const msg = e instanceof Error ? e.message : "Marking failed.";
+      setError(
+        msg === "allowance_exhausted"
+          ? "You’ve used up your plan’s allowance. Buy another plan to keep marking."
+          : msg
+      );
       setFiles(await listFiles(fromFolder.handle).catch(() => files));
     } finally {
       setBusy(false);
       setProgress(null);
+      // Refresh the allowance bar after any marking attempt
+      window.dispatchEvent(new Event("allowance-refresh"));
     }
   }
 

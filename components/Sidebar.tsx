@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Folder } from "@/lib/fileSystem";
 import { createClient } from "@/lib/supabase/client";
+import AllowanceBar from "@/components/AllowanceBar";
 
 interface Props {
   folders: Folder[];
@@ -106,8 +107,9 @@ export default function Sidebar({
         )}
       </nav>
 
-      {/* User row + menu */}
+      {/* Allowance + user row + menu */}
       <div className="relative px-3 pb-5">
+        <AllowanceBar />
         {menuOpen && (
           <>
             {/* click-away catcher */}
