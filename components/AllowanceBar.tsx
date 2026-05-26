@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 const PLAN_LABELS: Record<string, string> = {
@@ -44,7 +45,10 @@ export default function AllowanceBar() {
   const low  = left !== null && left <= 15;
 
   return (
-    <div className="px-3 py-3 rounded-lg bg-white/[0.04] mb-2">
+    <Link
+      href="/plans"
+      className="block px-3 py-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-colors mb-2"
+    >
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[11px] font-medium text-[#9BAECC]">{PLAN_LABELS[plan] ?? plan}</span>
         {left !== null && (
@@ -54,15 +58,18 @@ export default function AllowanceBar() {
         )}
       </div>
       {pctUsed === null ? (
-        <p className="text-[11px] text-[#657BAA]">Buy a plan to start marking.</p>
+        <p className="text-[11px] text-[var(--accent-400)]">Buy a plan to start marking →</p>
       ) : (
-        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${low ? "bg-red-400" : "bg-[var(--accent-500)]"}`}
-            style={{ width: `${pctUsed}%` }}
-          />
-        </div>
+        <>
+          <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${low ? "bg-red-400" : "bg-[var(--accent-500)]"}`}
+              style={{ width: `${pctUsed}%` }}
+            />
+          </div>
+          {low && <p className="text-[10px] text-red-300 mt-1.5">Running low — tap to renew →</p>}
+        </>
       )}
-    </div>
+    </Link>
   );
 }
