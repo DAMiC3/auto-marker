@@ -1,9 +1,14 @@
 # ADR-001: AI provider & input strategy for marking
 
-**Status:** Proposed
+**Status:** Proposed (provider/model); input strategy **Accepted**
 **Date:** 2026-05-26
 **Deciders:** Michael (owner)
-**Related:** `docs/cost-and-pricing-notes.md`
+**Related:** `docs/cost-and-pricing-notes.md`, **ADR-002 (pricing — final)**
+
+> **Update:** Inputs are confirmed **typed** (not handwritten), so the input strategy is
+> **decided: extract text + positions from the PDF text layer** (no vision, no OCR).
+> **Pricing is finalised in ADR-002** — ignore the draft pricing in this doc's
+> Recommendation section below.
 
 ## Context
 
