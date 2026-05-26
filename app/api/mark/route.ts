@@ -11,18 +11,18 @@ interface MarkTypeInput {
 
 interface MarkRequest {
   memoText: string;
-  pages: string[];          // base64 PNG, one per page
+  pages: string[];                 // base64 PNG, one per page
   strictness: number;
   markTypes: MarkTypeInput[];
+  quality?: "standard" | "high";   // maps to model tier (names hidden from UI)
 }
 
-// One mark the AI wants stamped on the paper
 interface Annotation {
-  page: number;             // 0-based page index
-  y: number;                // 0 (top) .. 1 (bottom) — vertical position
-  shape: string;            // one of the mark-type shapes
-  marks: string;            // e.g. "3/5"
-  comment: string;          // short margin note
+  page: number;
+  y: number;
+  shape: string;
+  marks: string;
+  comment: string;
 }
 
 interface MarkResponse {
@@ -33,16 +33,58 @@ interface MarkResponse {
   summary: string;
 }
 
+// Hidden model mapping — the UI only ever says "Standard" / "High accuracy".
+const MODELS = {
+  standard: "claude-sonnet-4-5",
+  high:     "claude-opus-4-5",
+} as const;
+
+function buildSystemPrompt(strictness: number, markTypes: MarkTypeInput[]): string {
+  const shapeList = markTypes.map((m) => `"${m.shape}" (${m.abbrev} = ${m.label})`).join(", ");
+
+  return `You are an exam marker for university tests. Your single job is to mark each student answer against the supplied MEMO (the official answer key) and award marks exactly as the memo dictates.
+
+HOW TO MARK
+- The memo is the only source of truth. Compare every answer to the memo and nothing else.
+- Reward ACCURACY and CORRECTNESS, never writing style. A short, plainly written answer that contains the correct points earns full marks. A long, eloquent, confident answer that misses the required points does NOT earn marks.
+- Award partial marks for each correct point the memo allocates that is present in the answer.
+- Apply strictness ${strictness}/10 (1 = lenient, generous partial credit; 10 = strict, marks only for clearly correct points).
+
+DO NOT HALLUCINATE
+- Never invent facts, marks, questions, points, or content that is not actually present in the student's answer or the memo.
+- Do not award marks for plausible-sounding content that the memo does not support.
+- Do not be swayed by confident or fluent prose — verify each claim against the memo.
+- If an answer is missing, unreadable, or off-topic, mark it 0 and say so plainly. Never guess a mark.
+- Every mark you give must be justifiable from evidence in the answer and the memo.
+
+OUTPUT
+For each answer you assess, produce one annotation to stamp on the page:
+- "page": 0-based page index the answer is on
+- "y": vertical position of that answer, 0.0 (top) to 1.0 (bottom)
+- "shape": the mark symbol to draw, one of: ${shapeList}
+- "marks": awarded/available, e.g. "3/5"
+- "comment": a short, factual margin note (max ~8 words)
+
+Respond ONLY with valid JSON in exactly this shape, no prose outside it:
+{
+  "total": <sum of awarded marks>,
+  "available": <sum of available marks>,
+  "percentage": <rounded integer>,
+  "annotations": [ { "page": 0, "y": 0.3, "shape": "tick", "marks": "3/5", "comment": "Correct method" } ],
+  "summary": "<2-3 factual sentences on overall performance>"
+}`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as MarkRequest;
-    const { memoText, pages, strictness, markTypes } = body;
+    const { memoText, pages, strictness, markTypes, quality = "standard" } = body;
 
     if (!pages || pages.length === 0) {
       return NextResponse.json({ error: "No pages to mark." }, { status: 400 });
     }
 
-    // ── Mock fallback so the stamp + move pipeline is testable without a key ──
+    // ── Mock fallback so the pipeline is testable without a key ──
     if (!process.env.ANTHROPIC_API_KEY) {
       const annotations: Annotation[] = pages.flatMap((_, p) => [
         { page: p, y: 0.22, shape: "tick",  marks: "5/5", comment: "Correct." },
@@ -57,43 +99,31 @@ export async function POST(req: NextRequest) {
     }
 
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const model  = MODELS[quality] ?? MODELS.standard;
 
-    const shapeList = markTypes.map((m) => `"${m.shape}" (${m.abbrev} = ${m.label})`).join(", ");
+    // System prompt is constant across a batch → cache it.
+    const system: Anthropic.TextBlockParam[] = [
+      { type: "text", text: buildSystemPrompt(strictness, markTypes), cache_control: { type: "ephemeral" } },
+    ];
 
-    const systemPrompt = `You are an experienced university examiner marking a student's test paper.
-You are given the MEMO (answer key) and images of each page of the student's answers.
-Mark like a real human marker: judge each answer against the memo and decide marks.
-
-Strictness: ${strictness}/10 (1 = very lenient, generous partial credit; 10 = very strict).
-
-For every answer you assess, produce one annotation describing the mark to stamp on the page:
-- "page": 0-based index of the page the answer is on
-- "y": vertical position of that answer on the page, 0.0 (very top) to 1.0 (very bottom)
-- "shape": the mark symbol to draw, one of: ${shapeList}
-- "marks": awarded over available, e.g. "3/5"
-- "comment": a very short margin note (max ~8 words)
-
-Respond ONLY with valid JSON in exactly this shape:
-{
-  "total": <sum of awarded marks>,
-  "available": <sum of available marks>,
-  "percentage": <rounded integer>,
-  "annotations": [ { "page": 0, "y": 0.3, "shape": "tick", "marks": "3/5", "comment": "Good method" } ],
-  "summary": "<2-3 sentence overall assessment>"
-}`;
-
-    const content: Anthropic.MessageParam["content"] = [
-      { type: "text", text: `MEMO (answer key):\n${memoText || "(none provided)"}\n\nStudent answer pages follow, in order.` },
+    // Memo is constant across a batch → cache it (prefix before the per-paper images).
+    const content: Anthropic.ContentBlockParam[] = [
+      {
+        type: "text",
+        text: `MEMO (answer key):\n${memoText || "(none provided)"}`,
+        cache_control: { type: "ephemeral" },
+      },
       ...pages.map((data) => ({
         type: "image" as const,
         source: { type: "base64" as const, media_type: "image/png" as const, data },
       })),
+      { type: "text", text: "Mark the student answer pages above against the memo. Return only the JSON." },
     ];
 
     const message = await client.messages.create({
-      model: "claude-opus-4-5",
+      model,
       max_tokens: 4096,
-      system: systemPrompt,
+      system,
       messages: [{ role: "user", content }],
     });
 

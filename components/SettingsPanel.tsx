@@ -17,11 +17,14 @@ export interface Profile {
   subject: string;
 }
 
+export type MarkingQuality = "standard" | "high";
+
 export interface Settings {
   defaultStrictness: number;
   accent: string; // tailwind color key, e.g. "indigo"
   profile: Profile;
   markTypes: MarkType[];
+  markingQuality: MarkingQuality;
 }
 
 // Standard exam-marking mark types (M/A/B/E/FT/C), as used by e-marking tools
@@ -40,6 +43,7 @@ export const DEFAULT_SETTINGS: Settings = {
   accent: "indigo",
   profile: { name: "Michael Bernard", subject: "English" },
   markTypes: DEFAULT_MARK_TYPES,
+  markingQuality: "standard",
 };
 
 const ACCENTS: { key: string; label: string; swatch: string }[] = [
@@ -64,6 +68,7 @@ export function loadSettings(): Settings {
       profile:   { ...DEFAULT_SETTINGS.profile, ...(parsed.profile ?? {}) },
       markTypes: (parsed.markTypes && parsed.markTypes.length > 0 ? parsed.markTypes : DEFAULT_MARK_TYPES)
         .map((m) => ({ ...m, shape: (m.shape ?? "tick") as MarkShape })),
+      markingQuality: parsed.markingQuality ?? DEFAULT_SETTINGS.markingQuality,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -88,6 +93,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   const [accent, setAccent]         = useState(initial.accent);
   const [profile, setProfile]       = useState<Profile>(initial.profile);
   const [markTypes, setMarkTypes]   = useState<MarkType[]>(initial.markTypes);
+  const [quality, setQuality]       = useState<MarkingQuality>(initial.markingQuality);
 
   // Re-sync when reopened
   useEffect(() => {
@@ -96,6 +102,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
       setAccent(initial.accent);
       setProfile(initial.profile);
       setMarkTypes(initial.markTypes);
+      setQuality(initial.markingQuality);
     }
   }, [open, initial]);
 
@@ -117,7 +124,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   }
 
   function handleSave() {
-    const next: Settings = { defaultStrictness: strictness, accent, profile, markTypes };
+    const next: Settings = { defaultStrictness: strictness, accent, profile, markTypes, markingQuality: quality };
     saveSettings(next);
     document.documentElement.dataset.accent = accent;
     onSave(next);
@@ -196,6 +203,40 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
             <div className="flex justify-between mt-2">
               <span className="text-[12px] text-slate-400">Lenient</span>
               <span className="text-[12px] text-slate-400">Strict</span>
+            </div>
+          </section>
+
+          {/* Marking engine (model tier — names intentionally hidden) */}
+          <section className="border-t border-slate-100 pt-6">
+            <h3 className="text-[14px] font-semibold text-slate-800 mb-1">Marking engine</h3>
+            <p className="text-[12px] text-slate-400 mb-3">
+              Choose how thorough the AI is. Higher accuracy uses more of your allowance.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {([
+                { key: "standard", title: "Standard", desc: "Fast and efficient. Great for most marking." },
+                { key: "high",     title: "High accuracy", desc: "Most thorough judgment for tricky or high-stakes papers." },
+              ] as { key: MarkingQuality; title: string; desc: string }[]).map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setQuality(opt.key)}
+                  className={`text-left rounded-xl border p-4 transition-colors ${
+                    quality === opt.key
+                      ? "border-[var(--accent-500)] bg-[var(--accent-50)]"
+                      : "border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[13px] font-semibold text-slate-800">{opt.title}</span>
+                    {quality === opt.key && (
+                      <svg className="w-4 h-4 text-[var(--accent-600)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </div>
+                  <span className="text-[12px] text-slate-500 leading-snug block">{opt.desc}</span>
+                </button>
+              ))}
             </div>
           </section>
 

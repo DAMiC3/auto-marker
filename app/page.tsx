@@ -167,7 +167,7 @@ export default function Home() {
 
         if (entry.name.toLowerCase().endsWith(".pdf")) {
           const file    = await entry.handle.getFile();
-          const outcome = await markPaper(file, memoText, strictness, settings.markTypes);
+          const outcome = await markPaper(file, memoText, strictness, settings.markTypes, settings.markingQuality);
           const marked  = entry.name.replace(/\.pdf$/i, "") + " (marked).pdf";
           await writeFile(toFolder.handle, marked, outcome.bytes);
           await fromFolder.handle.removeEntry(entry.name);

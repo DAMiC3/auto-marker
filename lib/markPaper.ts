@@ -151,7 +151,8 @@ export async function markPaper(
   file: File,
   memoText: string,
   strictness: number,
-  markTypes: MarkType[]
+  markTypes: MarkType[],
+  quality: "standard" | "high" = "standard"
 ): Promise<MarkOutcome> {
   const original = new Uint8Array(await file.arrayBuffer());
   const pages    = await renderToImages(original);
@@ -163,6 +164,7 @@ export async function markPaper(
       memoText,
       pages,
       strictness,
+      quality,
       markTypes: markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
     }),
   });
