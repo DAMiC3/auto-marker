@@ -31,6 +31,22 @@ async function getPdfjs() {
 
 interface TextItemish { str?: string; transform?: number[] }
 
+/** True if a rendered page is essentially empty (almost all white pixels). */
+function isCanvasBlank(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const total = w * h;
+  let nonWhite = 0;
+  let sampled = 0;
+  // Sample ~1 in every 16 pixels for speed
+  for (let p = 0; p < total; p += 16) {
+    const i = p * 4;
+    if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) nonWhite++;
+    sampled++;
+  }
+  // Blank if under 0.2% of sampled pixels carry any ink
+  return sampled > 0 && nonWhite / sampled < 0.002;
+}
+
 /**
  * Prepare a paper for marking: extract each page's text (with vertical y-hints)
  * for typed PDFs; fall back to a rendered image only for pages with no text
@@ -70,13 +86,17 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
         .join("\n");
       pages.push({ kind: "text", text });
     } else {
-      // No text layer → render an image fallback
+      // No text layer → render to check it, then either skip (blank) or send as image
       const vp     = page.getViewport({ scale: 1.6 });
       const canvas = document.createElement("canvas");
       canvas.width  = vp.width;
       canvas.height = vp.height;
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvas, canvasContext: ctx, viewport: vp }).promise;
+
+      // Skip truly blank pages entirely — don't waste tokens sending them
+      if (isCanvasBlank(ctx, canvas.width, canvas.height)) continue;
+
       pages.push({ kind: "image", data: canvas.toDataURL("image/png").split(",")[1] });
     }
   }
