@@ -26,6 +26,7 @@ export interface Settings {
   profile: Profile;
   markTypes: MarkType[];
   markingQuality: MarkingQuality;
+  subjects: string[]; // user-managed list for the subject combobox
 }
 
 // Standard exam-marking mark types (M/A/B/E/FT/C), as used by e-marking tools
@@ -45,6 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   profile: { name: "Michael Bernard", subject: "English" },
   markTypes: DEFAULT_MARK_TYPES,
   markingQuality: "standard",
+  subjects: ["English", "Mathematics"],
 };
 
 const ACCENTS: { key: string; label: string; swatch: string }[] = [
@@ -70,6 +72,7 @@ export function loadSettings(): Settings {
       markTypes: (parsed.markTypes && parsed.markTypes.length > 0 ? parsed.markTypes : DEFAULT_MARK_TYPES)
         .map((m) => ({ ...m, shape: (m.shape ?? "tick") as MarkShape })),
       markingQuality: parsed.markingQuality ?? DEFAULT_SETTINGS.markingQuality,
+      subjects: parsed.subjects && parsed.subjects.length > 0 ? parsed.subjects : DEFAULT_SETTINGS.subjects,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -125,7 +128,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   }
 
   function handleSave() {
-    const next: Settings = { defaultStrictness: strictness, accent, profile, markTypes, markingQuality: quality };
+    const next: Settings = { defaultStrictness: strictness, accent, profile, markTypes, markingQuality: quality, subjects: initial.subjects };
     saveSettings(next);
     document.documentElement.dataset.accent = accent;
     onSave(next);

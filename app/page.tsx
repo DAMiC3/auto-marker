@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import StrictnessSlider from "@/components/StrictnessSlider";
-import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings } from "@/components/SettingsPanel";
+import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings, saveSettings } from "@/components/SettingsPanel";
 import InstallButton from "@/components/InstallButton";
+import SubjectCombobox from "@/components/SubjectCombobox";
 import {
   type Folder,
   type FileEntry,
@@ -19,8 +20,19 @@ import {
   writeFile,
   pickFile,
 } from "@/lib/fileSystem";
-import { markPaper, extractMemoText } from "@/lib/markPaper";
+import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
 import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
+import type { Annotation } from "@/lib/markingPrompt";
+
+type MarkMode = "instant" | "batch";
+
+interface MarkResultLike {
+  total: number;
+  available: number;
+  percentage: number;
+  annotations: Annotation[];
+  summary: string;
+}
 
 interface BatchResult {
   name: string;
@@ -51,6 +63,10 @@ export default function Home() {
   const [selectedMemoId, setSelectedMemoId] = useState<string | null>(null);
   const memoText = memos.find((m) => m.id === selectedMemoId)?.text ?? "";
 
+  // Subject + marking mode
+  const [subject, setSubject] = useState("");
+  const [mode, setMode]       = useState<MarkMode>("instant");
+
   const [busy, setBusy]         = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError]       = useState<string | null>(null);
@@ -62,7 +78,18 @@ export default function Home() {
     const s = loadSettings();
     setSettings(s);
     setStrictness(s.defaultStrictness);
+    setSubject(s.profile.subject || s.subjects[0] || "");
   }, []);
+
+  // Add a new subject option and persist it
+  function handleAddSubject(v: string) {
+    setSettings((prev) => {
+      if (prev.subjects.includes(v)) return prev;
+      const next = { ...prev, subjects: [...prev.subjects, v] };
+      saveSettings(next);
+      return next;
+    });
+  }
 
   // Detect support after mount (avoids SSR/client mismatch)
   useEffect(() => {
@@ -157,32 +184,9 @@ export default function Home() {
     setMessage(null);
     setResults([]);
 
-    const batch = [...files];
-    const done: BatchResult[] = [];
-
     try {
-      for (let i = 0; i < batch.length; i++) {
-        const entry = batch[i];
-        setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
-
-        if (entry.name.toLowerCase().endsWith(".pdf")) {
-          const file    = await entry.handle.getFile();
-          const outcome = await markPaper(file, memoText, strictness, settings.markTypes, settings.markingQuality);
-          const marked  = entry.name.replace(/\.pdf$/i, "") + " (marked).pdf";
-          await writeFile(toFolder.handle, marked, outcome.bytes);
-          await fromFolder.handle.removeEntry(entry.name);
-          done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
-        } else {
-          // Non-PDF documents are just moved across (can't be stamped)
-          await moveFile(entry.name, fromFolder.handle, toFolder.handle);
-          done.push({ name: entry.name, total: 0, available: 0, percentage: 0, moved: true });
-        }
-      }
-
-      setFiles(await listFiles(fromFolder.handle));
-      setResults(done);
-      const markedCount = done.filter((d) => !d.moved).length;
-      setMessage(`Done. Marked ${markedCount} paper${markedCount === 1 ? "" : "s"} and moved everything to “${toName}”.`);
+      if (mode === "batch") await runBatch(fromFolder, toFolder);
+      else await runInstant(fromFolder, toFolder);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Marking failed.";
       setError(
@@ -194,9 +198,104 @@ export default function Home() {
     } finally {
       setBusy(false);
       setProgress(null);
-      // Refresh the allowance bar after any marking attempt
       window.dispatchEvent(new Event("allowance-refresh"));
     }
+  }
+
+  // ── Instant: mark each paper synchronously ───────────────────────────────
+  async function runInstant(from: Folder, to: Folder) {
+    const batch = [...files];
+    const done: BatchResult[] = [];
+    for (let i = 0; i < batch.length; i++) {
+      const entry = batch[i];
+      setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
+      if (entry.name.toLowerCase().endsWith(".pdf")) {
+        const file    = await entry.handle.getFile();
+        const outcome = await markInstant(file, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
+        const marked  = entry.name.replace(/\.pdf$/i, "") + " (marked).pdf";
+        await writeFile(to.handle, marked, outcome.bytes);
+        await from.handle.removeEntry(entry.name);
+        done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
+      } else {
+        await moveFile(entry.name, from.handle, to.handle);
+        done.push({ name: entry.name, total: 0, available: 0, percentage: 0, moved: true });
+      }
+    }
+    await finish(from, done, "Done");
+  }
+
+  // ── Batch: submit all papers to the 50%-cheaper Batch API, then stamp ─────
+  async function runBatch(from: Folder, to: Folder) {
+    const batch  = [...files];
+    const pdfs   = batch.filter((e) => e.name.toLowerCase().endsWith(".pdf"));
+    const others = batch.filter((e) => !e.name.toLowerCase().endsWith(".pdf"));
+    const done: BatchResult[] = [];
+
+    // Non-PDFs are just moved
+    for (const e of others) {
+      await moveFile(e.name, from.handle, to.handle);
+      done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
+    }
+
+    if (pdfs.length > 0) {
+      const prepared: { customId: string; name: string; original: Uint8Array; pages: PageContent[] }[] = [];
+      for (let i = 0; i < pdfs.length; i++) {
+        setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
+        const file = await pdfs[i].handle.getFile();
+        const { original, pages } = await preparePaper(file);
+        prepared.push({ customId: `p${i}`, name: pdfs[i].name, original, pages });
+      }
+
+      setProgress("Submitting batch…");
+      const submitRes = await fetch("/api/mark/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memoText, subject, strictness,
+          quality: settings.markingQuality,
+          markTypes: settings.markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
+          papers: prepared.map((p) => ({ customId: p.customId, pages: p.pages })),
+        }),
+      });
+      if (!submitRes.ok) throw new Error((await submitRes.json().catch(() => ({}))).error ?? "Batch submission failed");
+      const submit = await submitRes.json();
+
+      const results: Record<string, MarkResultLike | { error: string }> =
+        submit.results ?? (await pollBatch(submit.batchId, submit.quality ?? settings.markingQuality));
+
+      const byId = new Map(prepared.map((p) => [p.customId, p]));
+      for (const [cid, r] of Object.entries(results)) {
+        const p = byId.get(cid);
+        if (!p) continue;
+        if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0 }); continue; }
+        const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0);
+        const marked = p.name.replace(/\.pdf$/i, "") + " (marked).pdf";
+        await writeFile(to.handle, marked, bytes);
+        await from.handle.removeEntry(p.name);
+        done.push({ name: marked, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
+      }
+    }
+
+    await finish(from, done, "Batch done");
+  }
+
+  async function pollBatch(batchId: string, quality: string): Promise<Record<string, MarkResultLike | { error: string }>> {
+    for (let attempt = 0; attempt < 240; attempt++) {
+      setProgress(attempt === 0 ? "Processing batch…" : `Processing batch… (${attempt * 5}s)`);
+      const res = await fetch(`/api/mark/batch?id=${encodeURIComponent(batchId)}&quality=${quality}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Batch retrieval failed");
+      const data = await res.json();
+      if (data.status === "ended") return data.results;
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    throw new Error("Batch is taking longer than expected — it may still finish. Try again shortly.");
+  }
+
+  async function finish(from: Folder, done: BatchResult[], verb: string) {
+    setFiles(await listFiles(from.handle));
+    setResults(done);
+    const marked = done.filter((d) => !d.moved).length;
+    setMessage(`${verb}. Marked ${marked} paper${marked === 1 ? "" : "s"} and moved everything to “${toName}”.`);
   }
 
   return (
@@ -341,6 +440,17 @@ export default function Home() {
                     )}
                   </div>
 
+                  {/* Subject */}
+                  <div>
+                    <label className="block text-[12px] font-medium text-slate-500 mb-1.5">Subject</label>
+                    <SubjectCombobox
+                      options={settings.subjects}
+                      value={subject}
+                      onChange={setSubject}
+                      onAddOption={handleAddSubject}
+                    />
+                  </div>
+
                   {/* Document list in the From folder */}
                   <div>
                     <p className="text-[12px] font-medium text-slate-500 mb-2">
@@ -380,6 +490,31 @@ export default function Home() {
               {message}
             </div>
           )}
+
+          {/* Marking mode */}
+          <div className="bg-white rounded-2xl border border-slate-200 px-7 py-5 flex items-center justify-between">
+            <div>
+              <h2 className="text-[15px] font-semibold text-slate-900">Marking mode</h2>
+              <p className="text-[13px] text-slate-500 mt-0.5">
+                {mode === "instant"
+                  ? "Instant — results right away."
+                  : "Batch — about half the cost; runs in the background (keep this open)."}
+              </p>
+            </div>
+            <div className="flex rounded-xl bg-slate-100 p-1 shrink-0">
+              {(["instant", "batch"] as MarkMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`px-4 py-2 rounded-lg text-[13px] font-medium transition-colors ${
+                    mode === m ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  {m === "instant" ? "Instant" : "Batch"}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* Mark button — AI marks each paper, then moves it to the To folder */}
           <button
