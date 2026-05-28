@@ -5,7 +5,7 @@ import { createServiceClient, isServiceConfigured } from "@/lib/supabase/service
 import { costZar, type TokenUsage } from "@/lib/cost";
 import {
   MODELS, type PageContent, type MarkTypeInput,
-  buildSystem, buildContent, parseMarkResponse, mockResult,
+  buildSystem, buildContent, parseMarkResponse,
 } from "@/lib/markingPrompt";
 
 export const maxDuration = 60;
@@ -28,9 +28,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No pages to mark." }, { status: 400 });
     }
 
-    // Mock fallback when no API key is set
+    // No silent mock — if the key is missing, fail clearly rather than stamp fake marks.
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json(mockResult(pages.length, strictness));
+      return NextResponse.json(
+        { error: "AI marking isn’t configured (missing API key). No marks were applied." },
+        { status: 503 }
+      );
     }
 
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });

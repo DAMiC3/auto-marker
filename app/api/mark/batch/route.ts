@@ -5,7 +5,7 @@ import { createServiceClient, isServiceConfigured } from "@/lib/supabase/service
 import { costZar, type TokenUsage } from "@/lib/cost";
 import {
   MODELS, type PageContent, type MarkTypeInput,
-  buildSystem, buildContent, parseMarkResponse, mockResult, type MarkResponse,
+  buildSystem, buildContent, parseMarkResponse, type MarkResponse,
 } from "@/lib/markingPrompt";
 
 export const maxDuration = 60;
@@ -45,11 +45,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No papers to mark." }, { status: 400 });
     }
 
-    // Mock: return results immediately, keyed by customId (no polling needed)
+    // No silent mock — fail clearly if the key is missing.
     if (!process.env.ANTHROPIC_API_KEY) {
-      const results: Record<string, MarkResponse> = {};
-      for (const p of papers) results[p.customId] = mockResult(p.pages.length, strictness);
-      return NextResponse.json({ status: "ended", results });
+      return NextResponse.json(
+        { error: "AI marking isn’t configured (missing API key)." },
+        { status: 503 }
+      );
     }
 
     // Allowance pre-check (once for the whole batch)
