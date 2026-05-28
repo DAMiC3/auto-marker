@@ -123,6 +123,19 @@ export async function extractMemoText(file: File): Promise<string> {
 }
 
 // ── PDF stamping ─────────────────────────────────────────────────────────────
+function wrapText(text: string, font: import("pdf-lib").PDFFont, size: number, maxWidth: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const test = cur ? `${cur} ${w}` : w;
+    if (cur && font.widthOfTextAtSize(test, size) > maxWidth) { lines.push(cur); cur = w; }
+    else cur = test;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
 function hexToRgb(hex: string): RGB {
   const h = hex.replace("#", "");
   const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
@@ -163,7 +176,8 @@ export async function stampPaper(
   annotations: Annotation[],
   markTypes: MarkType[],
   total: number,
-  available: number
+  available: number,
+  summary = ""
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(original);
   const font   = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -196,6 +210,20 @@ export async function stampPaper(
     p0.drawText(label, { x: width - w - 20, y: height - 34, size: 16, font, color: rgb(0.86, 0.15, 0.15) });
   }
 
+  // Overall comment (the summary) at the bottom of the last page
+  if (summary.trim() && pages.length > 0) {
+    const last = pages[pages.length - 1];
+    const { width } = last.getSize();
+    const size = 9;
+    const lh = 12;
+    const lines = wrapText(`Overall: ${summary.trim()}`, font, size, width - 100);
+    let y = 28 + (lines.length - 1) * lh;
+    for (const ln of lines) {
+      last.drawText(ln, { x: 50, y, size, font, color: rgb(0.2, 0.2, 0.2) });
+      y -= lh;
+    }
+  }
+
   return new Uint8Array(await pdfDoc.save());
 }
 
@@ -225,7 +253,7 @@ export async function markInstant(
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Marking failed");
 
   const data  = await res.json();
-  const bytes = await stampPaper(original, data.annotations ?? [], markTypes, data.total ?? 0, data.available ?? 0);
+  const bytes = await stampPaper(original, data.annotations ?? [], markTypes, data.total ?? 0, data.available ?? 0, data.summary ?? "");
   return {
     bytes,
     total: data.total ?? 0,

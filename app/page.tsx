@@ -268,7 +268,7 @@ export default function Home() {
         const p = byId.get(cid);
         if (!p) continue;
         if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0 }); continue; }
-        const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0);
+        const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "");
         const marked = p.name.replace(/\.pdf$/i, "") + " (marked).pdf";
         await writeFile(to.handle, marked, bytes);
         await from.handle.removeEntry(p.name);
