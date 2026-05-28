@@ -13,8 +13,8 @@ interface Rates {
 
 // Per-token USD rates (per-million ÷ 1e6).
 const RATES: Record<string, Rates> = {
-  "claude-sonnet-4-5": { in: 3 / 1e6,  out: 15 / 1e6, cacheWrite: 3.75 / 1e6,  cacheRead: 0.30 / 1e6 },
-  "claude-opus-4-5":   { in: 15 / 1e6, out: 75 / 1e6, cacheWrite: 18.75 / 1e6, cacheRead: 1.50 / 1e6 },
+  "claude-sonnet-4-6": { in: 3 / 1e6,  out: 15 / 1e6, cacheWrite: 3.75 / 1e6,  cacheRead: 0.30 / 1e6 },
+  "claude-opus-4-7":   { in: 15 / 1e6, out: 75 / 1e6, cacheWrite: 18.75 / 1e6, cacheRead: 1.50 / 1e6 },
 };
 
 export interface TokenUsage {
@@ -25,7 +25,7 @@ export interface TokenUsage {
 }
 
 export function costZar(model: string, usage: TokenUsage): number {
-  const r = RATES[model] ?? RATES["claude-sonnet-4-5"];
+  const r = RATES[model] ?? RATES["claude-sonnet-4-6"];
   const usd =
     (usage.input_tokens ?? 0) * r.in +
     (usage.output_tokens ?? 0) * r.out +

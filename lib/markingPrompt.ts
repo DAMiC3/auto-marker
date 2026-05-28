@@ -4,8 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 
 // Hidden model mapping — the UI only ever says "Standard" / "High accuracy".
 export const MODELS = {
-  standard: "claude-sonnet-4-5",
-  high:     "claude-opus-4-5",
+  standard: "claude-sonnet-4-6",
+  high:     "claude-opus-4-7",
 } as const;
 
 export type Quality = keyof typeof MODELS;
