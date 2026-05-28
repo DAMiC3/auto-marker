@@ -188,17 +188,22 @@ export async function stampPaper(
     return mt ? hexToRgb(mt.color) : rgb(0.86, 0.15, 0.15);
   };
 
+  // Comments are collected and printed at the bottom — the margins are too
+  // narrow to write them beside the answers without overlapping/clipping.
+  const notes: { marks: string; comment: string; color: RGB }[] = [];
+
   for (const ann of annotations) {
     const page = pages[ann.page - 1];
     if (!page) continue;
     const { width, height } = page.getSize();
     const color = colorForShape(ann.shape);
     const y = height * (1 - Math.min(Math.max(ann.y, 0), 1));
-    const x = width * 0.84;
+    // Shape + score sit in the far-right margin, clear of the answer text.
+    const x = width - 42;
 
-    drawShape(page, ann.shape, x, y, 14, color);
-    if (ann.marks)   page.drawText(ann.marks,   { x: x + 16, y: y - 4, size: 11, font, color });
-    if (ann.comment) page.drawText(ann.comment, { x: width * 0.62, y: y - 18, size: 8, font, color: rgb(0.35, 0.35, 0.35) });
+    drawShape(page, ann.shape, x, y, 12, color);
+    if (ann.marks) page.drawText(ann.marks, { x: width - 32, y: y - 15, size: 9, font, color });
+    if (ann.comment) notes.push({ marks: ann.marks, comment: ann.comment, color });
   }
 
   const p0 = pages[0];
@@ -210,16 +215,31 @@ export async function stampPaper(
     p0.drawText(label, { x: width - w - 20, y: height - 34, size: 16, font, color: rgb(0.86, 0.15, 0.15) });
   }
 
-  // Overall comment (the summary) at the bottom of the last page
-  if (summary.trim() && pages.length > 0) {
+  // Marker's notes + overall comment at the bottom of the last page
+  if (pages.length > 0 && (notes.length > 0 || summary.trim())) {
     const last = pages[pages.length - 1];
     const { width } = last.getSize();
-    const size = 9;
+    const maxW = width - 100;
     const lh = 12;
-    const lines = wrapText(`Overall: ${summary.trim()}`, font, size, width - 100);
-    let y = 28 + (lines.length - 1) * lh;
-    for (const ln of lines) {
-      last.drawText(ln, { x: 50, y, size, font, color: rgb(0.2, 0.2, 0.2) });
+
+    const block: { text: string; size: number; color: RGB }[] = [];
+    if (notes.length > 0) {
+      block.push({ text: "Marker's notes:", size: 10, color: rgb(0.2, 0.2, 0.2) });
+      for (const n of notes) {
+        wrapText(`• ${n.marks}  ${n.comment}`, font, 9, maxW).forEach((ln, i) =>
+          block.push({ text: ln, size: 9, color: i === 0 ? n.color : rgb(0.35, 0.35, 0.35) })
+        );
+      }
+    }
+    if (summary.trim()) {
+      wrapText(`Overall: ${summary.trim()}`, font, 9, maxW).forEach((ln) =>
+        block.push({ text: ln, size: 9, color: rgb(0.2, 0.2, 0.2) })
+      );
+    }
+
+    let y = 28 + (block.length - 1) * lh;
+    for (const b of block) {
+      last.drawText(b.text, { x: 50, y, size: b.size, font, color: b.color });
       y -= lh;
     }
   }

@@ -107,8 +107,18 @@ export function buildContent(memoText: string, pages: PageContent[]): Anthropic.
 }
 
 export function parseMarkResponse(rawText: string): MarkResponse {
-  const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-  const raw = JSON.parse(cleaned) as {
+  let s = rawText.trim();
+  // Prefer a fenced ```json ... ``` block if present
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  // Otherwise slice first { to last } — tolerates any prose around the JSON
+  // (e.g. the model saying "I don't see student answers… { … }").
+  const open = s.indexOf("{");
+  const close = s.lastIndexOf("}");
+  if (open === -1 || close === -1 || close < open) {
+    throw new Error("No JSON object found in the model response.");
+  }
+  const raw = JSON.parse(s.slice(open, close + 1)) as {
     total?: number; available?: number; percentage?: number; summary?: string;
     annotations?: { p?: number; y?: number; s?: string; m?: string; c?: string }[];
   };

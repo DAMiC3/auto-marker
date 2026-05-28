@@ -40,6 +40,7 @@ interface BatchResult {
   available: number;
   percentage: number;
   moved?: boolean;
+  failed?: boolean;
 }
 
 export default function Home() {
