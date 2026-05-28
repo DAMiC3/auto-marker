@@ -63,19 +63,19 @@ INPUT FORMAT
 - The student's answers are given page by page as text. Each line is prefixed with [y=0.NN] — its vertical position on that page (0.00 = top, 1.00 = bottom).
 - Some pages may be supplied as images instead (read them directly).
 
-OUTPUT — for each answer you assess, produce one annotation to stamp on the page:
-- "page": the page number the answer is on (starts at 1)
+OUTPUT — for each answer you assess, produce one annotation. Use these SHORT keys to save space:
+- "p": the page number the answer is on (starts at 1)
 - "y": vertical position 0.0–1.0; use the [y=...] hints to place the mark next to the answer
-- "shape": the mark symbol, one of: ${shapeList}
-- "marks": awarded/available, e.g. "3/5"
-- "comment": a short factual margin note (max ~8 words)
+- "s": the mark symbol, one of: ${shapeList}
+- "m": awarded/available, e.g. "3/5"
+- "c": a short factual margin note (max ~8 words)
 
 Respond ONLY with valid JSON in exactly this shape, no prose outside it:
 {
   "total": <sum of awarded marks>,
   "available": <sum of available marks>,
   "percentage": <rounded integer>,
-  "annotations": [ { "page": 1, "y": 0.3, "shape": "tick", "marks": "3/5", "comment": "Correct method" } ],
+  "annotations": [ { "p": 1, "y": 0.3, "s": "tick", "m": "3/5", "c": "Correct method" } ],
   "summary": "<2-3 factual sentences on overall performance>"
 }`;
 
@@ -108,7 +108,24 @@ export function buildContent(memoText: string, pages: PageContent[]): Anthropic.
 
 export function parseMarkResponse(rawText: string): MarkResponse {
   const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-  return JSON.parse(cleaned) as MarkResponse;
+  const raw = JSON.parse(cleaned) as {
+    total?: number; available?: number; percentage?: number; summary?: string;
+    annotations?: { p?: number; y?: number; s?: string; m?: string; c?: string }[];
+  };
+  // Expand the short keys (p,y,s,m,c) back to the full annotation shape.
+  return {
+    total: raw.total ?? 0,
+    available: raw.available ?? 0,
+    percentage: raw.percentage ?? 0,
+    summary: raw.summary ?? "",
+    annotations: (raw.annotations ?? []).map((a) => ({
+      page: a.p ?? 1,
+      y: a.y ?? 0,
+      shape: a.s ?? "tick",
+      marks: a.m ?? "",
+      comment: a.c ?? "",
+    })),
+  };
 }
 
 // Mock result used when no API key is configured (per-paper page count).
