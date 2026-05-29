@@ -29,6 +29,7 @@ export default function Sidebar({
 }: Props) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showCreed, setShowCreed] = useState(false);
 
   async function handleSignOut() {
     setMenuOpen(false);
@@ -48,9 +49,29 @@ export default function Sidebar({
   return (
     <aside className="w-[260px] shrink-0 flex flex-col h-full bg-[#0E1525]">
       {/* Logo */}
-      <div className="h-16 flex items-center gap-3 px-5 bg-[#090E1A]">
+      <div className="relative h-16 flex items-center gap-3 px-5 bg-[#090E1A]">
         <div className="w-7 h-7 rounded-[7px] bg-[var(--accent-600)]" />
         <span className="text-[#EFF4FE] font-bold text-base">AutoMark</span>
+
+        <button
+          onClick={() => setShowCreed((v) => !v)}
+          title="About"
+          aria-label="About the maker"
+          className="ml-0.5 text-[#657BAA] hover:text-[#EFF4FE] transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M10 2h4v5h5v4h-5v11h-4V11H5V7h5z" />
+          </svg>
+        </button>
+
+        {showCreed && (
+          <>
+            <div className="fixed inset-0 z-20" onClick={() => setShowCreed(false)} />
+            <div className="absolute top-[58px] left-5 z-30 w-[210px] rounded-lg bg-[#161E2E] border border-white/10 px-3 py-2.5 text-[12px] leading-snug text-[#9BAECC] shadow-xl">
+              This app was created by a Christian.
+            </div>
+          </>
+        )}
       </div>
 
       {/* Nav */}
