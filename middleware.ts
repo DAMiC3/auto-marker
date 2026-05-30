@@ -1,3 +1,5 @@
+// NOTE: middleware.ts (deprecated in Next 16) — used because @opennextjs/cloudflare
+// currently only supports Edge middleware, not the new Node-runtime proxy.ts.
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
@@ -6,7 +8,7 @@ const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 const PUBLIC_PREFIXES = ["/login", "/auth"];
 
-export async function proxy(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Static assets / PWA files — always allow
@@ -23,8 +25,6 @@ export async function proxy(req: NextRequest) {
   // If Supabase isn't configured (e.g. local dev without env), don't gate.
   if (!url || !anonKey) return NextResponse.next();
 
-  // Bind a Supabase client to the request/response cookies so the session
-  // token can be refreshed on each request.
   let res = NextResponse.next({ request: req });
   const supabase = createServerClient(url, anonKey, {
     cookies: {
