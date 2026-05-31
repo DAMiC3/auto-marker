@@ -58,9 +58,13 @@ export async function POST(req: NextRequest) {
     if (userId) {
       const svc = createServiceClient();
       const { data: profile } = await svc
-        .from("profiles").select("plan, allowance_cap_zar, used_zar").eq("id", userId).single();
-      if (profile && profile.plan !== "none" && Number(profile.used_zar) >= Number(profile.allowance_cap_zar)) {
-        return NextResponse.json({ error: "allowance_exhausted" }, { status: 402 });
+        .from("profiles").select("plan, allowance_cap_zar, used_zar, period_end").eq("id", userId).single();
+      if (profile && profile.plan !== "none") {
+        const capHit = Number(profile.used_zar) >= Number(profile.allowance_cap_zar);
+        const timeUp = !!profile.period_end && new Date(profile.period_end) <= new Date();
+        if (capHit || timeUp) {
+          return NextResponse.json({ error: "allowance_exhausted" }, { status: 402 });
+        }
       }
     }
 

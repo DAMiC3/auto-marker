@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# cloudflare / opennext build artifacts
+.open-next/
+.wrangler/
+
+# sales collateral — lives in OneDrive, contains banking details; keep out of the repo
+AutoMark-Offer.html
+AutoMark-Offer.pdf
+scripts/build-offer-pdf.py
+scripts/build-links-docx.py

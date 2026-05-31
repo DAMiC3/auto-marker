@@ -11,5 +11,9 @@
   },
   "observability": {
     "enabled": true
+  },
+  "vars": {
+    "NEXT_PUBLIC_SUPABASE_URL": "https://pdlkkfedovssaaecemkp.supabase.co",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkbGtrZmVkb3Zzc2FhZWNlbWtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0NTA5NzIsImV4cCI6MjA3ODAyNjk3Mn0.c69rj9Sk7E-Luam3QV6u1pq8exAVKint-AFiu2z0QuE"
   }
 }
