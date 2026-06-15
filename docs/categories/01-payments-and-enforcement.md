@@ -335,25 +335,42 @@ These two are **decided** (Michael, 2026-06-15) but deferred. Documenting so the
 
 **Rejected approach:** a flat safety multiplier (`estimate × 1.15`). Michael's call (2026-06-15): *"we should not times the estimated amount by 1.15 or something stupid like that."* An arbitrary cushion is both too blunt (cuts honest users off early) and not a real ceiling.
 
-**Agreed design (Michael, 2026-06-15) — chunked, self-correcting batches:**
+**Agreed design (Michael, 2026-06-15) — user-triggered, self-correcting chunked batches:**
 
-The estimate is never trusted to be a hard ceiling. Instead we **bound the damage of an under-estimate to a single chunk** and reconcile against *actual* spend between chunks:
+The estimate is never trusted as a hard ceiling. When a batch is too big for the remaining allowance we don't silently reject it — we offer the user a choice, and if they opt in, an automatic loop marks as much as the plan covers, one chunk at a time, reconciling against *actual* spend so an estimate miss can only ever overshoot by a single chunk.
 
-1. **Hard batch ceiling.** No batch is ever larger than ~**100 documents** (a tunable safety cap), regardless of how much credit is left. Caps the blast radius of any single estimate miss.
-2. **Dynamic page budget that tightens as credit shrinks.** Convert remaining credit → an allowed page count using the per-page estimate: `maxPages ≈ floor(remaining_zar / estimatedCostPerPage)`. The more credit left, the more pages you may upload; as the balance falls, the allowed upload shrinks automatically. (Applied alongside the 100-doc cap — whichever is smaller wins.)
-3. **Pre-flight per chunk.** Estimate the chunk's cost. **If the estimate says it will *not* exceed the remaining limit → submit it.** If it would, shrink the chunk (fewer pages) until it fits.
-4. **Post-flight reconciliation against real cost.** After the chunk's `costZarBatch` is recorded:
-   - **Actual went over the limit** → **write off the overage** (accept the small loss — bounded to one chunk), **block the account**, and tell the user *"You've reached your usage limit."* Stop here.
-   - **Actual stayed within the limit** → **recalculate** the page budget from the new (lower) remaining credit and **send the next chunk** for the still-unmarked documents.
-5. **Repeat** until all documents are marked or the account is blocked.
+**A. Pre-flight — when the batch is over the limit.** On submit, estimate the whole job. If the estimate exceeds the remaining allowance, show a dialog. **No Rand figures appear** (see "Privacy" below) — only document/page counts:
 
-Why this works: because each chunk is reconciled against *actual* usage before the next is sent, a wrong estimate can only ever overshoot by **one chunk's worth** — never the whole job. The estimate just needs to be "good enough for one chunk," and the 100-doc cap keeps even that bounded. Overshoot is explicitly accepted ("I will write off what is lost") in exchange for never blocking an honest user prematurely.
+> **This batch is over your spending limit.**
+> We estimate this run of **{N} documents** ({P} pages) is more than your plan can mark right now.
+>
+> [ **Mark in chunks** ]   [ **Remove some documents** ]
+>
+> ▾ *More info* (disclosure under "Mark in chunks"): *"We'll mark your documents in smaller batches instead of all at once. After each batch we check how much of your allowance is left and automatically send the next one — getting smaller as you near your limit. Marking stops on its own when your allowance runs out, so you only get through the documents your plan covers; the rest are left untouched for after you renew. You don't need to do anything while it runs."*
+
+- **"Mark in chunks"** → starts the automatic loop (B).
+- **"Remove some documents"** → **cancels the run entirely** and returns the user to the start page so they can take documents out and try again. Nothing is marked or charged.
+
+**B. The chunk loop — runs automatically and independently.** Once "Mark in chunks" is chosen the loop runs on its own, with **no further prompts**, until the documents run out or the allowance does:
+
+1. **Size the chunk.** Send the number of pages the estimate says the remaining allowance can handle, also capped at the hard ceiling of ~**100 documents**.
+2. **Submit + wait.** The chunk is a normal Anthropic batch (full 50% batch discount, identical marking/stamping). Poll to completion.
+3. **Reconcile against actual cost.** Record the chunk's real `costZarBatch`:
+   - **Over the limit** → the amount it went over is **written off** (accepted loss, bounded to one chunk). The account is **blocked** and the user is told *"You've reached your usage limit."* The loop stops.
+   - **Still allowance left** → continue.
+4. **Shrink the next chunk.** Each successive chunk is sized smaller as the remaining allowance falls, down to a floor of **~R10 estimated per chunk** (internal figure, never shown). Once chunks reach the R10 floor they stay at R10 until the documents or the allowance run out. *Rationale:* smaller chunks near the limit keep the final write-off small; the R10 floor stops the loop doing hundreds of tiny round-trips.
+5. **Repeat** from step 1.
+
+**Privacy of figures (hard rule, consistent with ADR-002).** The user is **never** shown the Rand estimate or actual cost. Everything is expressed in **documents**, **pages**, or a qualitative *"over the estimated amount / over your limit."* The R10 chunk floor, the per-page estimate, and all Rand maths stay server-side.
+
+Why this works: every chunk is reconciled against *actual* usage before the next is sent, so a wrong estimate overshoots by at most one chunk — never the whole job — and because the chunks shrink as the limit nears, even that last overshoot is small. Overshoot is explicitly accepted ("I will write off what is lost") in exchange for never blocking an honest user prematurely and never marking blind.
 
 **Implementation sketch (not yet built):**
-- `lib/usage.ts`: add `maxPagesForBudget(remainingZar, quality)` and a `MAX_BATCH_DOCS = 100` constant.
-- Client batch flow (`app/page.tsx` / `lib/markPaper.ts`): slice the selected documents into chunks of `min(MAX_BATCH_DOCS, fit-by-pages)`; submit → poll → record → re-read remaining → next chunk; on overspend, surface the block banner (`blockMessage("allowance_exhausted")`) and stop.
-- Batch route POST already estimates per submission; it stays the per-chunk gate. The new logic is the *chunking loop* on top of it.
-- **Recalibrate constants from real data** (still worth doing): periodically compare predicted vs actual `usage_events` costs and tune the token budgets in `lib/usage.ts`. (Pairs with the drift query in P1-6.)
+- `lib/usage.ts`: `maxPagesForBudget(remainingZar, quality)`; constants `MAX_BATCH_DOCS = 100` and `MIN_CHUNK_ZAR = 10`.
+- Over-limit dialog component (the **A** copy above) with the "more info" disclosure; "Remove some documents" resets the run and routes back to start.
+- Client chunk loop (`app/page.tsx` / `lib/markPaper.ts`): runs automatically once opted in — size → submit → poll → record → re-read remaining → shrink → next; shows progress as "chunk k of …" **in documents/pages only**, and on overspend shows the block banner (`blockMessage("allowance_exhausted")`) and stops.
+- Batch route POST stays the per-chunk gate (it already estimates per submission); the new logic is the loop + dialog on top.
+- **Recalibrate constants from real data** (still worth doing): compare predicted vs actual `usage_events` costs and tune the token budgets. (Pairs with the drift query in P1-6.)
 
 ### Problem 8 — `recordUsage` can fail silently → free usage (P1-6) ✅ BUILT (2026-06-15)
 
@@ -456,7 +473,7 @@ Parked rows drain themselves on the next successful marking write; this is just 
 | ~~**P1-1**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Duplicate revenue triggers — `log_plan_revenue` + its trigger dropped (migration `drop_duplicate_revenue_trigger`); only `log_revenue_event` (insert+update) remains. `revenue_events` was empty. (= P6-1) | Done. |
 | ~~**P1-2**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Instant pre-check failed OPEN on a Supabase error (free marking during an outage); batch 500'd. Both routes now share one **fail-CLOSED** gate `checkAllowance()` (§6.3): any verification failure blocks marking (`verification_failed`/`not_authenticated`) and pages ops via `notifyOps`; client shows a plain-English banner. (= P4-2) | Done. |
 | ~~**P1-3**~~ | ⚪ | **Per-paper overspend** — instant only blocks when *already* over cap; a user at 99% can mark one more (~R3.50 max) paper and exceed. | **WON'T FIX — accepted (Michael, 2026-06-15):** *"it is not an issue, I will write that off."* Bounded to one paper; the loss is written off by design. |
-| **P1-4** | 🟠 | **Batch estimate can under-block** (Problem 7) — per-page token budgets (text ≈600t / image ≈2000t) are conservative but not guaranteed ceilings; a dense script can run higher and the batch overspends. | **Redesigned (§11b), not built.** Reject flat ×1.15 buffer. Instead: hard ~100-doc batch cap + dynamic page budget that tightens as credit shrinks; submit in chunks, reconcile each against *actual* cost, send the next chunk only if still under; on overspend write off the overage + block ("usage limit reached"). Overshoot bounded to one chunk. |
+| **P1-4** | 🟠 | **Batch estimate can under-block** (Problem 7) — per-page token budgets (text ≈600t / image ≈2000t) are conservative but not guaranteed ceilings; a dense script can run higher and the batch overspends. | **Redesigned (§11b), not built.** Over-limit batch shows a dialog: **"Mark in chunks"** (auto loop) or **"Remove some documents"** (cancel → start). Loop runs automatically: ~100-doc cap + page budget sized to remaining allowance, chunks shrink toward a **R10/chunk floor** as the limit nears; reconcile each against *actual* cost; on overspend write off the overage + block. **Never shows Rand — documents/pages only.** Overshoot bounded to one (shrinking) chunk. |
 | **P1-5** | 🟡 | **Hardcoded cost constants** (`USD_TO_ZAR = 18.5`, token prices in `lib/cost.ts`) → silent margin drift when Anthropic re-prices or ZAR moves. | Add a periodic review note, or source rates from config. |
 | **P1-6** | 🟢 | **`recordUsage` silent failure → free usage** (Problem 8) — ✅ **BUILT + LIVE (2026-06-15).** Failed writes are parked in a **Cloudflare D1** dead-letter buffer (`pending_usage`, binding `USAGE_DLQ`) and auto-drained on the next successful `add_usage`; `notifyOps()` alerts via `OPS_ALERT_WEBHOOK_URL`. The pre-check error path now also pages ops (done via `checkAllowance()`, P1-2). See §6.3 / §11b / §13b. | Optional only: a scheduled cron drain (currently drains opportunistically on the next write); set `OPS_ALERT_WEBHOOK_URL` secret to enable phone push. |
 | ~~**P1-7**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Trial farming — `set_plan` now enforces **one trial per email** via a persistent `trial_claims` ledger (keyed by email, survives account deletion); a second trial raises `trial_already_used`. Paid plans unaffected. Migration `one_trial_per_email`; see §4.1. | Done. (Multi-email farming is out of scope by design — "one per email" was the chosen policy.) |
