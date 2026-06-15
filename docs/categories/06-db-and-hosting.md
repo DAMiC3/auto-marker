@@ -27,7 +27,7 @@ The infrastructure substrate: the Postgres database (schema, RLS, functions, tri
 
 ---
 
-## 3. Schema — three tables (all in `public`, all RLS-enabled)
+## 3. Schema — four tables (all in `public`, all RLS-enabled)
 
 ### 3.1 `profiles` (4 rows) — the customer table
 PK `id uuid` → FK `auth.users(id)`. Columns + the bits that matter at the DB level:
@@ -47,6 +47,9 @@ PK `id bigint` **identity ALWAYS** (auto), FK `user_id → auth.users(id)`. `pap
 
 It is populated **automatically by triggers** on `profiles` (§5.2) whenever someone moves onto/renews a **paid** plan. It's empty today only because no non-owner paid-plan transition has happened since the triggers were installed (the one paid profile — the owner — predates them, and trigger logging is not retroactive).
 
+### 3.4 `trial_claims` (P1-7, added 2026-06-15) — one-trial-per-email ledger
+`email text` PK, `user_id uuid` (nullable), `claimed_at timestamptz` default `now()`. **RLS enabled, zero policies** (service-role / `SECURITY DEFINER` only — like `revenue_events`). Keyed by **email**, not profile id, so it survives account deletion → a deleted-and-recreated account cannot claim a second free trial. Written/checked exclusively by `set_plan` when granting a `'trial'`. → **Category 1 §4.1 / P1-7**.
+
 ---
 
 ## 4. RLS model
@@ -63,7 +66,7 @@ It is populated **automatically by triggers** on `profiles` (§5.2) whenever som
 | Function | Purpose |
 |----------|---------|
 | `handle_new_user()` | Trigger `on_auth_user_created` on `auth.users` INSERT → creates the `profiles` row (defaults → R0/none). |
-| `set_plan(p_user, p_plan)` | Assign/renew a plan; resets `used_zar`, sets cap + period (trial 7d/R50, standard 30d/R300, pro 30d/R1500). |
+| `set_plan(p_user, p_plan)` | Assign/renew a plan; resets `used_zar`, sets cap + period (trial 7d/R50, standard 30d/R300, pro 30d/R1500). **Enforces one trial per email** via `trial_claims` (P1-7). |
 | `add_usage(p_user, p_cost, p_papers, p_tier, p_file)` | Append a `usage_events` row + increment `profiles.used_zar`. |
 
 ### 5.2 Revenue logging (single-trigger as of 2026-06-15)
@@ -191,7 +194,7 @@ mv open-next.config.ts.bak open-next.config.ts
 | `package.json` | Scripts (`build:cf`), pinned deps |
 | `netlify.toml` | Paused Netlify deploy config |
 | `middleware.ts` | Edge auth middleware (Cat 7) |
-| DB tables | `profiles`, `usage_events`, `revenue_events` |
+| DB tables | `profiles`, `usage_events`, `revenue_events`, `trial_claims` |
 | DB functions | `handle_new_user`, `set_plan`, `add_usage`, `plan_price`, `log_revenue_event` |
 | `../../AGENTS.md` / `../HANDOVER.md` | Canonical infra briefing + deploy steps |
 

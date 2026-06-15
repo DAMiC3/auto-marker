@@ -101,6 +101,7 @@ update public.profiles
 - **`used_zar` always resets to 0.** Buying/renewing a plan gives a clean period. Lifetime spend in `usage_events` is untouched.
 - The `else` branch (unknown plan, e.g. `'none'`) sets cap 0 — effectively a block.
 - ⚠️ The trial period was **3 days** until 2026-06-12; corrected to **7 days** to match the product requirement (R50 / 7 days).
+- 🔒 **One trial per email (P1-7, 2026-06-15).** When `p_plan = 'trial'`, `set_plan` looks up the user's email in `auth.users` and refuses (`trial_already_used`) if that email is already in `public.trial_claims`; otherwise it records the claim. The ledger is keyed by **email, not profile id**, so deleting and re-creating an account does *not* unlock a second trial. Paid plans (`standard`/`pro`) are never gated. Migration: `one_trial_per_email` (also in `db/supabase/one_trial_per_email.sql`). To re-grant a trial for testing: `delete from public.trial_claims where email = lower('<addr>');`
 
 ### 4.2 `add_usage(p_user, p_cost, p_papers, p_tier, p_file)` — record spend
 
@@ -307,6 +308,7 @@ User picks plan on /plans
 - 🛟 **`recordUsage` silent failure → free usage (Problem 8).** Failed Supabase writes are now parked in a Cloudflare D1 dead-letter buffer (`lib/pendingUsage.ts`) and auto-drained on the next successful write; `notifyOps` (`lib/notify.ts`) alerts on failure. See §11b + §13b. **Live in production** (D1 `automark-usage-dlq` provisioned + deployed).
 - 💰 **Duplicate revenue triggers (P1-1).** `log_plan_revenue()` + its trigger double-logged every paid-plan update. **Dropped** (migration `drop_duplicate_revenue_trigger`); only `log_revenue_event()` remains. `revenue_events` was empty — no data fix needed.
 - 🚪 **Pre-check failed OPEN → free marking during an outage (P1-2 / P4-2).** The instant route wrapped its allowance pre-check in `try/catch … continuing`, so a Supabase/auth error let the paper through unmetered; batch meanwhile 500'd. Both routes now share one **fail-CLOSED** gate, `checkAllowance()` in `lib/usage.ts` (§6.3): if the user can't be resolved or the profile can't be read, marking is **blocked** (`verification_failed` 503 / `not_authenticated` 401) and nothing is sent to Anthropic. Genuine backend failures also page ops via `notifyOps`. The client maps the new codes to plain-English banners (`blockMessage()` in `app/page.tsx`).
+- 🔒 **Trial farming — one trial per email (P1-7).** `set_plan` now refuses a second `'trial'` grant for an email already in the persistent `public.trial_claims` ledger (keyed by email so it survives account deletion). Paid plans unaffected. Migration `one_trial_per_email` (`db/supabase/one_trial_per_email.sql`); see §4.1.
 
 **Deliberately not changed:**
 - **No grace period after `period_end`.** Hard cutoff is correct given "cut users off when the plan runs out." Adding a buffer would hand out free post-expiry usage.
@@ -331,9 +333,27 @@ These two are **decided** (Michael, 2026-06-15) but deferred. Documenting so the
 
 **Problem.** Per-page token budgets (text ≈600t, image ≈2000t) are conservative but not guaranteed ceilings. An unusually long/dense answer script or a huge memo can push real tokens past the estimate, so a batch that passed the pre-flight on submit still ends up over cap once real `costZarBatch` is recorded.
 
-**Agreed direction (revisit later — "figure it out a bit later"):**
-1. **Add a safety buffer to the pre-flight check** — block when `estimate × 1.15 > remaining` (a 15% cushion) instead of `estimate > remaining`. The user is cut off slightly early but never overspends. Tunable as real data arrives.
-2. **Recalibrate from real data** — periodically compare predicted vs actual `usage_events` costs for known paper/page mixes and adjust the token constants in `lib/usage.ts`. (Pairs with the drift query in P1-6.)
+**Rejected approach:** a flat safety multiplier (`estimate × 1.15`). Michael's call (2026-06-15): *"we should not times the estimated amount by 1.15 or something stupid like that."* An arbitrary cushion is both too blunt (cuts honest users off early) and not a real ceiling.
+
+**Agreed design (Michael, 2026-06-15) — chunked, self-correcting batches:**
+
+The estimate is never trusted to be a hard ceiling. Instead we **bound the damage of an under-estimate to a single chunk** and reconcile against *actual* spend between chunks:
+
+1. **Hard batch ceiling.** No batch is ever larger than ~**100 documents** (a tunable safety cap), regardless of how much credit is left. Caps the blast radius of any single estimate miss.
+2. **Dynamic page budget that tightens as credit shrinks.** Convert remaining credit → an allowed page count using the per-page estimate: `maxPages ≈ floor(remaining_zar / estimatedCostPerPage)`. The more credit left, the more pages you may upload; as the balance falls, the allowed upload shrinks automatically. (Applied alongside the 100-doc cap — whichever is smaller wins.)
+3. **Pre-flight per chunk.** Estimate the chunk's cost. **If the estimate says it will *not* exceed the remaining limit → submit it.** If it would, shrink the chunk (fewer pages) until it fits.
+4. **Post-flight reconciliation against real cost.** After the chunk's `costZarBatch` is recorded:
+   - **Actual went over the limit** → **write off the overage** (accept the small loss — bounded to one chunk), **block the account**, and tell the user *"You've reached your usage limit."* Stop here.
+   - **Actual stayed within the limit** → **recalculate** the page budget from the new (lower) remaining credit and **send the next chunk** for the still-unmarked documents.
+5. **Repeat** until all documents are marked or the account is blocked.
+
+Why this works: because each chunk is reconciled against *actual* usage before the next is sent, a wrong estimate can only ever overshoot by **one chunk's worth** — never the whole job. The estimate just needs to be "good enough for one chunk," and the 100-doc cap keeps even that bounded. Overshoot is explicitly accepted ("I will write off what is lost") in exchange for never blocking an honest user prematurely.
+
+**Implementation sketch (not yet built):**
+- `lib/usage.ts`: add `maxPagesForBudget(remainingZar, quality)` and a `MAX_BATCH_DOCS = 100` constant.
+- Client batch flow (`app/page.tsx` / `lib/markPaper.ts`): slice the selected documents into chunks of `min(MAX_BATCH_DOCS, fit-by-pages)`; submit → poll → record → re-read remaining → next chunk; on overspend, surface the block banner (`blockMessage("allowance_exhausted")`) and stop.
+- Batch route POST already estimates per submission; it stays the per-chunk gate. The new logic is the *chunking loop* on top of it.
+- **Recalibrate constants from real data** (still worth doing): periodically compare predicted vs actual `usage_events` costs and tune the token budgets in `lib/usage.ts`. (Pairs with the drift query in P1-6.)
 
 ### Problem 8 — `recordUsage` can fail silently → free usage (P1-6) ✅ BUILT (2026-06-15)
 
@@ -429,17 +449,17 @@ Parked rows drain themselves on the next successful marking write; this is just 
 
 ## Problems / To-Fix Backlog
 
-> Severity: 🔴 fix before real paying customers · 🟠 important · 🟡 minor/polish · 🔵 not-built/roadmap. IDs are stable references.
+> Severity: 🔴 fix before real paying customers · 🟠 important · 🟡 minor/polish · 🔵 not-built/roadmap · 🟢 fixed · ⚪ won't-fix/accepted. IDs are stable references.
 
 | ID | Sev | Problem | Fix direction |
 |----|-----|---------|---------------|
 | ~~**P1-1**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Duplicate revenue triggers — `log_plan_revenue` + its trigger dropped (migration `drop_duplicate_revenue_trigger`); only `log_revenue_event` (insert+update) remains. `revenue_events` was empty. (= P6-1) | Done. |
 | ~~**P1-2**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Instant pre-check failed OPEN on a Supabase error (free marking during an outage); batch 500'd. Both routes now share one **fail-CLOSED** gate `checkAllowance()` (§6.3): any verification failure blocks marking (`verification_failed`/`not_authenticated`) and pages ops via `notifyOps`; client shows a plain-English banner. (= P4-2) | Done. |
-| **P1-3** | 🟠 | **Per-paper overspend** — instant only blocks when *already* over cap; a user at 99% can mark one more (possibly Opus, ~R3.50) paper and exceed. Bounded by one paper, but real. | Add a "will this paper exceed remaining?" pre-check, or accept the bounded bleed and document it. |
-| **P1-4** | 🟠 | **Batch estimate can under-block** (Problem 7) — per-page token budgets (text ≈600t / image ≈2000t) are conservative but not guaranteed ceilings; a dense script can run higher and the batch overspends. | **Designed (§11b):** add a 15% buffer to the pre-flight (`estimate × 1.15 > remaining`) + recalibrate token constants from real `usage_events`. Deferred. |
+| ~~**P1-3**~~ | ⚪ | **Per-paper overspend** — instant only blocks when *already* over cap; a user at 99% can mark one more (~R3.50 max) paper and exceed. | **WON'T FIX — accepted (Michael, 2026-06-15):** *"it is not an issue, I will write that off."* Bounded to one paper; the loss is written off by design. |
+| **P1-4** | 🟠 | **Batch estimate can under-block** (Problem 7) — per-page token budgets (text ≈600t / image ≈2000t) are conservative but not guaranteed ceilings; a dense script can run higher and the batch overspends. | **Redesigned (§11b), not built.** Reject flat ×1.15 buffer. Instead: hard ~100-doc batch cap + dynamic page budget that tightens as credit shrinks; submit in chunks, reconcile each against *actual* cost, send the next chunk only if still under; on overspend write off the overage + block ("usage limit reached"). Overshoot bounded to one chunk. |
 | **P1-5** | 🟡 | **Hardcoded cost constants** (`USD_TO_ZAR = 18.5`, token prices in `lib/cost.ts`) → silent margin drift when Anthropic re-prices or ZAR moves. | Add a periodic review note, or source rates from config. |
 | **P1-6** | 🟢 | **`recordUsage` silent failure → free usage** (Problem 8) — ✅ **BUILT + LIVE (2026-06-15).** Failed writes are parked in a **Cloudflare D1** dead-letter buffer (`pending_usage`, binding `USAGE_DLQ`) and auto-drained on the next successful `add_usage`; `notifyOps()` alerts via `OPS_ALERT_WEBHOOK_URL`. The pre-check error path now also pages ops (done via `checkAllowance()`, P1-2). See §6.3 / §11b / §13b. | Optional only: a scheduled cron drain (currently drains opportunistically on the next write); set `OPS_ALERT_WEBHOOK_URL` secret to enable phone push. |
-| **P1-7** | 🟠 | **Trial farming** — nothing stops multiple accounts/emails claiming repeated R50 trials (becomes live risk once the self-serve trial button exists). | One-trial-per-email/device guard before shipping self-serve trial. |
+| ~~**P1-7**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Trial farming — `set_plan` now enforces **one trial per email** via a persistent `trial_claims` ledger (keyed by email, survives account deletion); a second trial raises `trial_already_used`. Paid plans unaffected. Migration `one_trial_per_email`; see §4.1. | Done. (Multi-email farming is out of scope by design — "one per email" was the chosen policy.) |
 | **P1-8** | 🔵 | **Not built** — PayFast gateway + webhook → auto `set_plan`; self-serve "Start free trial" button. | Expansion plan Phase 2. |
 
 ---

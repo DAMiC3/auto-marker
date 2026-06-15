@@ -146,7 +146,7 @@ What a brand-new lecturer actually experiences today:
 
 ## 10. Onboarding roadmap (from `../expansion-plan.md`)
 - **Phase 1:** prominent first-launch help (big → corner), plain-language copy, the cross-browser file picker (so step 5 isn't a wall for non-Chromium users).
-- **Phase 2:** self-serve **"Start free trial"** button → a server action calling `set_plan(user,'trial')` with abuse guards (one trial per user/email), so steps 6–7 become a real path to value. Also: trial-expiry / confirmation emails (Cat 3 §8).
+- **Phase 2:** self-serve **"Start free trial"** button → a server action calling `set_plan(user,'trial')`, so steps 6–7 become a real path to value. The **one-trial-per-email abuse guard is already built** (P1-7, 2026-06-15) — `set_plan` refuses a repeat trial via the `trial_claims` ledger, so the button just needs to call it and surface the `trial_already_used` error. Also: trial-expiry / confirmation emails (Cat 3 §8).
 
 ---
 
