@@ -5,6 +5,7 @@ import Sidebar from "@/components/Sidebar";
 import StrictnessSlider from "@/components/StrictnessSlider";
 import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings, saveSettings } from "@/components/SettingsPanel";
 import InstallButton from "@/components/InstallButton";
+import PlanNotice from "@/components/PlanNotice";
 import SubjectCombobox from "@/components/SubjectCombobox";
 import {
   type Folder,
@@ -18,6 +19,8 @@ import {
   listFiles,
   moveFile,
   writeFile,
+  uniqueName,
+  createMarkedFolder,
   pickFile,
 } from "@/lib/fileSystem";
 import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
@@ -25,6 +28,22 @@ import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
 import type { Annotation } from "@/lib/markingPrompt";
 
 type MarkMode = "instant" | "batch";
+
+// Turn a route error code into a clear, user-facing message. Marking is fail-CLOSED:
+// when a plan can't be verified (auth/DB error) the route blocks rather than mark
+// blind, so the user must be told *why* nothing was marked — not shown a raw code.
+function blockMessage(code: string): string {
+  switch (code) {
+    case "allowance_exhausted":
+      return "You’ve used up your plan’s allowance. Buy another plan to keep marking.";
+    case "verification_failed":
+      return "We couldn’t verify your plan just now (a temporary system error), so nothing was marked. Please try again in a moment — you weren’t charged.";
+    case "not_authenticated":
+      return "Your session has expired. Please sign in again to keep marking.";
+    default:
+      return code;
+  }
+}
 
 interface MarkResultLike {
   total: number;
@@ -155,6 +174,20 @@ export default function Home() {
   const toFolder   = folders.find((f) => f.name === toName);
   const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy;
 
+  // Create a fresh, empty "Marked <date>" folder and use it as the destination.
+  // Guaranteed empty, so it always passes the destination-empty check on Mark.
+  async function handleCreateMarkedFolder() {
+    if (!root) return;
+    setError(null);
+    try {
+      const folder = await createMarkedFolder(root);
+      setFolders(await listFolders(root));
+      setToName(folder.name);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not create a marked-documents folder.");
+    }
+  }
+
   async function handleAddMemo() {
     const file = await pickFile();
     if (!file) return;
@@ -180,6 +213,19 @@ export default function Home() {
 
   async function handleMark() {
     if (!fromFolder || !toFolder || !canMark) return;
+
+    // The destination must start empty, so a run can never mix marked papers in
+    // with — or silently overwrite — files that are already there.
+    const existing = await listFiles(toFolder.handle).catch(() => [] as FileEntry[]);
+    if (existing.length > 0) {
+      setError(
+        `The destination folder “${toName}” isn’t empty — it already contains ${existing.length} ` +
+          `file${existing.length === 1 ? "" : "s"}. Empty it (or pick an empty folder) before marking, ` +
+          `so marked papers don’t mix with or overwrite what’s already there.`
+      );
+      return;
+    }
+
     setBusy(true);
     setError(null);
     setMessage(null);
@@ -190,11 +236,7 @@ export default function Home() {
       else await runInstant(fromFolder, toFolder);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Marking failed.";
-      setError(
-        msg === "allowance_exhausted"
-          ? "You’ve used up your plan’s allowance. Buy another plan to keep marking."
-          : msg
-      );
+      setError(blockMessage(msg));
       setFiles(await listFiles(fromFolder.handle).catch(() => files));
     } finally {
       setBusy(false);
@@ -213,9 +255,9 @@ export default function Home() {
       if (entry.name.toLowerCase().endsWith(".pdf")) {
         const file    = await entry.handle.getFile();
         const outcome = await markInstant(file, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
-        const marked  = entry.name.replace(/\.pdf$/i, "") + " (marked).pdf";
+        const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
         await writeFile(to.handle, marked, outcome.bytes);
-        await from.handle.removeEntry(entry.name);
+        if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
         done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
       } else {
         await moveFile(entry.name, from.handle, to.handle);
@@ -270,9 +312,9 @@ export default function Home() {
         if (!p) continue;
         if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0 }); continue; }
         const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "");
-        const marked = p.name.replace(/\.pdf$/i, "") + " (marked).pdf";
+        const marked = await uniqueName(to.handle, p.name.replace(/\.pdf$/i, "") + " (marked).pdf");
         await writeFile(to.handle, marked, bytes);
-        await from.handle.removeEntry(p.name);
+        if (!settings.keepOriginals) await from.handle.removeEntry(p.name);
         done.push({ name: marked, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
       }
     }
@@ -322,6 +364,9 @@ export default function Home() {
 
         {/* Body */}
         <main className="flex-1 overflow-y-auto px-8 py-8 flex flex-col gap-6">
+
+          {/* Plan expired / limit-reached banner (Problem 4) */}
+          <PlanNotice />
 
           <StrictnessSlider value={strictness} onChange={setStrictness} />
 
@@ -389,6 +434,16 @@ export default function Home() {
                           <option key={f.name} value={f.name} disabled={f.name === fromName}>{f.name}</option>
                         ))}
                       </select>
+                      <button
+                        type="button"
+                        onClick={handleCreateMarkedFolder}
+                        className="mt-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--accent-600)] hover:text-[var(--accent-700)] transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        Create new folder for marked documents
+                      </button>
                     </div>
                   </div>
 
