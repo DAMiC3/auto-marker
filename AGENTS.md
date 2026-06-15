@@ -36,6 +36,8 @@ mv open-next.config.ts.bak open-next.config.ts
 
 The hide-config dance is because OpenNext's own deploy command fails on Windows. Plain `wrangler deploy` uploads `.open-next/worker.js` cleanly.
 
+> ⚠️ **`build:cf` fails randomly on Windows** — see the Defender gotcha below. If a build dies with a *different* error each run (`copyfile … pages-manifest.json` ENOENT, `Unexpected "*"` in `next-server.js`, `Unexpected end of JSON input`, etc.), it's file-scan contention, not your code. Just re-run; it usually passes within a few attempts. Add the Defender exclusion to make it reliable.
+
 ## Secrets / env (NEVER commit values)
 
 Public vars live in `wrangler.jsonc` `vars`:
@@ -61,6 +63,18 @@ unset ANTHROPIC_API_KEY && npm run dev
 ```
 
 End-user terminals don't have this problem.
+
+## ⚠️ Gotcha — Windows Defender corrupts `build:cf` (random failures)
+
+`npm run build:cf` writes thousands of files into `.next` / `.open-next`; Windows Defender's real-time scanning locks/scans them mid-write and the build reads a half-written file → it fails at a **different stage every run** (manifest copy ENOENT, esbuild `Unexpected "*"`, `Unexpected end of JSON input`, …). It's non-deterministic environment contention, **not a code bug** — blind re-running eventually passes (observed: ~1 in 5 runs).
+
+**Durable fix** — exclude the project folder from Defender, once, in an **Administrator** PowerShell:
+
+```powershell
+Add-MpPreference -ExclusionPath "C:\Users\Michael Bernard\auto-marker"
+```
+
+Reverse later with `Remove-MpPreference -ExclusionPath "C:\Users\Michael Bernard\auto-marker"`. The Claude Code agent shell is **not elevated**, so an agent can't add this — it can only retry the build in a loop until one passes.
 
 ## Restore point
 
