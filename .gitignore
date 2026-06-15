@@ -44,6 +44,11 @@ next-env.d.ts
 .open-next/
 .wrangler/
 
+# claude per-session hook flags (keep commands/settings, ignore the flags)
+.claude/.brief-*
+# claude personal/local settings (machine-specific permissions)
+.claude/settings.local.json
+
 # sales collateral — lives in OneDrive, contains banking details; keep out of the repo
 AutoMark-Offer.html
 AutoMark-Offer.pdf
