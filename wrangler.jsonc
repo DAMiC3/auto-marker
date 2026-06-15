@@ -12,6 +12,17 @@
   "observability": {
     "enabled": true
   },
+  // Dead-letter buffer for usage writes that fail during a Supabase outage
+  // (Problem 8 / P1-6). Create it once, then paste the printed database_id here:
+  //   npx wrangler d1 create automark-usage-dlq
+  //   npx wrangler d1 execute automark-usage-dlq --remote --file=db/d1/pending_usage.sql
+  "d1_databases": [
+    {
+      "binding": "USAGE_DLQ",
+      "database_name": "automark-usage-dlq",
+      "database_id": "95927901-fb97-484c-b28f-f77b2fa3a607"
+    }
+  ],
   "vars": {
     "NEXT_PUBLIC_SUPABASE_URL": "https://pdlkkfedovssaaecemkp.supabase.co",
     "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkbGtrZmVkb3Zzc2FhZWNlbWtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0NTA5NzIsImV4cCI6MjA3ODAyNjk3Mn0.c69rj9Sk7E-Luam3QV6u1pq8exAVKint-AFiu2z0QuE"

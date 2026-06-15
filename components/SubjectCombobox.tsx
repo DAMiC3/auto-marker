@@ -62,7 +62,12 @@ export default function SubjectCombobox({ options, value, onChange, onAddOption 
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); canAdd ? add() : (filtered[0] && pick(filtered[0])); } }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                if (canAdd) add();
+                else if (filtered[0]) pick(filtered[0]);
+              }}
               placeholder="Search or add a subject…"
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-[13px] outline-none focus:border-[var(--accent-500)]"
             />

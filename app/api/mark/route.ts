@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { createClient as createUserClient } from "@/lib/supabase/server";
-import { createServiceClient, isServiceConfigured } from "@/lib/supabase/service";
+import { isServiceConfigured } from "@/lib/supabase/service";
 import { costZar, type TokenUsage } from "@/lib/cost";
+import { checkAllowance, recordUsage } from "@/lib/usage";
 import {
   MODELS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse,
@@ -39,29 +39,14 @@ export async function POST(req: NextRequest) {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const model  = MODELS[quality] ?? MODELS.standard;
 
-    // ── Metering pre-check ───────────────────────────────────────────────────
-    let userId: string | null = null;
-    if (isServiceConfigured()) {
-      try {
-        const sb = await createUserClient();
-        const { data: { user } } = await sb.auth.getUser();
-        userId = user?.id ?? null;
-        if (userId) {
-          const svc = createServiceClient();
-          const { data: profile } = await svc
-            .from("profiles").select("plan, allowance_cap_zar, used_zar, period_end").eq("id", userId).single();
-          if (profile && profile.plan !== "none") {
-            const capHit    = Number(profile.used_zar) >= Number(profile.allowance_cap_zar);
-            const timeUp    = !!profile.period_end && new Date(profile.period_end) <= new Date();
-            if (capHit || timeUp) {
-              return NextResponse.json({ error: "allowance_exhausted" }, { status: 402 });
-            }
-          }
-        }
-      } catch (e) {
-        console.error("Metering pre-check failed (continuing):", e);
-      }
+    // ── Metering pre-check (fail-CLOSED; see lib/usage.checkAllowance) ────────
+    // If the allowance can't be verified (auth or DB error), marking is BLOCKED —
+    // we never mark blind. The gate pages ops on genuine backend failures.
+    const gate = await checkAllowance();
+    if (!gate.allowed) {
+      return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
+    const userId = gate.userId;
 
     const message = await client.messages.create({
       model,
@@ -73,15 +58,10 @@ export async function POST(req: NextRequest) {
     const raw    = (message.content[0] as { type: string; text: string }).text;
     const result = parseMarkResponse(raw);
 
-    // ── Record usage ─────────────────────────────────────────────────────────
+    // ── Record usage (retries + loud failure log) ────────────────────────────
     if (isServiceConfigured() && userId) {
-      try {
-        const cost = costZar(model, message.usage as TokenUsage);
-        const svc  = createServiceClient();
-        await svc.rpc("add_usage", { p_user: userId, p_cost: cost, p_papers: 1, p_tier: quality, p_file: null });
-      } catch (e) {
-        console.error("Usage recording failed (continuing):", e);
-      }
+      const cost = costZar(model, message.usage as TokenUsage);
+      await recordUsage(userId, cost, 1, quality);
     }
 
     return NextResponse.json(result);

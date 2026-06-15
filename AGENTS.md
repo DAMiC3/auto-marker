@@ -45,6 +45,10 @@ Public vars live in `wrangler.jsonc` `vars`:
 Worker secrets (set via `npx wrangler secret put NAME`):
 - `ANTHROPIC_API_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `OPS_ALERT_WEBHOOK_URL` (optional) — ops alerts on Supabase write failure (e.g. an `ntfy.sh` topic for phone push). Unset = log-only. See Category 1 §13b.
+
+Bindings in `wrangler.jsonc`:
+- `USAGE_DLQ` (Cloudflare D1) — dead-letter buffer for failed usage writes (Problem 8). Needs a one-time `wrangler d1 create` + pasting the `database_id`; see Category 1 §13b.
 
 Local dev keys live in `.env.local` (gitignored).
 
@@ -81,6 +85,7 @@ End-user terminals don't have this problem.
 
 ## Where to go for depth
 
+- `docs/categories/README.md` — **the system split into 7 categories** (Payments & Enforcement, Marking & PDFs, UI, Error Handling, AI, DB & Hosting, Auth & Onboarding). Category 1 is fully documented; the rest are scaffolds. Update a category's doc whenever you change its code.
 - `docs/HANDOVER.md` — full state, architecture, gotchas, open items
 - `docs/adr-001-marking-ai-provider.md` — AI provider decision
 - `docs/adr-002-pricing-and-plans.md` — pricing model (Accepted)

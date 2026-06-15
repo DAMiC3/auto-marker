@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient as createUserClient } from "@/lib/supabase/server";
-import { createServiceClient, isServiceConfigured } from "@/lib/supabase/service";
-import { costZar, type TokenUsage } from "@/lib/cost";
+import { isServiceConfigured } from "@/lib/supabase/service";
+import { costZarBatch, type TokenUsage } from "@/lib/cost";
+import { recordUsage, estimateBatchCostZar, checkAllowance, type PaperPageSummary } from "@/lib/usage";
 import {
   MODELS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse, type MarkResponse,
@@ -53,18 +54,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Allowance pre-check (once for the whole batch)
-    const userId = await getUserId();
-    if (userId) {
-      const svc = createServiceClient();
-      const { data: profile } = await svc
-        .from("profiles").select("plan, allowance_cap_zar, used_zar, period_end").eq("id", userId).single();
-      if (profile && profile.plan !== "none") {
-        const capHit = Number(profile.used_zar) >= Number(profile.allowance_cap_zar);
-        const timeUp = !!profile.period_end && new Date(profile.period_end) <= new Date();
-        if (capHit || timeUp) {
-          return NextResponse.json({ error: "allowance_exhausted" }, { status: 402 });
-        }
+    // Allowance pre-check (fail-CLOSED; once for the whole batch). If the allowance
+    // can't be verified (auth or DB error), the batch is BLOCKED — we never submit
+    // blind. The gate pages ops on genuine backend failures.
+    const gate = await checkAllowance();
+    if (!gate.allowed) {
+      return NextResponse.json({ error: gate.error }, { status: gate.status });
+    }
+    const { profile } = gate;
+
+    // Pre-flight: a batch is submitted to Anthropic in one shot, so the only
+    // chance to stop an overspend is before we send it. Estimate the cost and
+    // refuse if it would blow past what's left on the plan.
+    if (profile) {
+      const remaining = Number(profile.allowance_cap_zar) - Number(profile.used_zar);
+      const pageSummaries: PaperPageSummary[] = papers.map((p) => ({
+        textPages:  p.pages.filter((pg) => pg.kind === "text").length,
+        imagePages: p.pages.filter((pg) => pg.kind === "image").length,
+      }));
+      const estimate = estimateBatchCostZar(pageSummaries, quality);
+      if (estimate > remaining) {
+        const perPaperAvg = estimate / papers.length;
+        const affordable = Math.max(0, Math.floor(remaining / perPaperAvg));
+        return NextResponse.json(
+          {
+            error: "allowance_exhausted",
+            detail: `This batch of ${papers.length} papers would exceed your remaining allowance. You can mark about ${affordable} more paper(s) on this plan — split the batch or upgrade.`,
+            affordable,
+          },
+          { status: 402 },
+        );
       }
     }
 
@@ -120,28 +139,17 @@ export async function GET(req: NextRequest) {
         } catch {
           results[cid] = { error: "Could not parse marking result." };
         }
-        totalCost += costZar(model, msg.usage as TokenUsage);
+        totalCost += costZarBatch(model, msg.usage as TokenUsage);
       } else {
         results[cid] = { error: "Marking failed for this paper." };
       }
     }
 
-    // Record total usage once
+    // Record total usage once (retries + loud failure log)
     if (isServiceConfigured() && totalCost > 0) {
       const userId = await getUserId();
       if (userId) {
-        try {
-          const svc = createServiceClient();
-          await svc.rpc("add_usage", {
-            p_user: userId,
-            p_cost: totalCost,
-            p_papers: Object.keys(results).length,
-            p_tier: quality,
-            p_file: null,
-          });
-        } catch (e) {
-          console.error("Batch usage recording failed (continuing):", e);
-        }
+        await recordUsage(userId, totalCost, Object.keys(results).length, quality);
       }
     }
 
