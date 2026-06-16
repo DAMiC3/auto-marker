@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createClient as createUserClient } from "@/lib/supabase/server";
 import { isServiceConfigured } from "@/lib/supabase/service";
 import { costZarBatch, type TokenUsage } from "@/lib/cost";
-import { recordUsage, estimateBatchCostZar, checkAllowance, type PaperPageSummary } from "@/lib/usage";
+import { recordUsage, estimateBatchCostZar, affordableDocCount, checkAllowance, MAX_BATCH_DOCS, type PaperPageSummary } from "@/lib/usage";
 import {
   MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse, type MarkResponse,
@@ -46,6 +46,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No papers to mark." }, { status: 400 });
     }
 
+    // Hard ceiling (safety rule C15). The P1-4 client loop never sends more than this,
+    // so hitting it means a buggy or hostile client — refuse rather than submit a
+    // batch whose overspend blast radius we haven't bounded.
+    if (papers.length > MAX_BATCH_DOCS) {
+      return NextResponse.json(
+        { error: "batch_too_large", maxDocs: MAX_BATCH_DOCS },
+        { status: 400 },
+      );
+    }
+
     // No silent mock — fail clearly if the key is missing.
     if (!process.env.ANTHROPIC_API_KEY) {
       return NextResponse.json(
@@ -74,12 +84,13 @@ export async function POST(req: NextRequest) {
       }));
       const estimate = estimateBatchCostZar(pageSummaries, quality);
       if (estimate > remaining) {
-        const perPaperAvg = estimate / papers.length;
-        const affordable = Math.max(0, Math.floor(remaining / perPaperAvg));
+        // How many of the leading documents actually fit — the chunk sizer for the
+        // P1-4 loop (precise cumulative fit, not a flat average). 0 = nothing fits.
+        const affordable = affordableDocCount(pageSummaries, remaining, quality);
         return NextResponse.json(
           {
             error: "allowance_exhausted",
-            detail: `This batch of ${papers.length} papers would exceed your remaining allowance. You can mark about ${affordable} more paper(s) on this plan — split the batch or upgrade.`,
+            detail: `This batch of ${papers.length} documents would exceed your remaining allowance. About ${affordable} more document(s) fit on this plan.`,
             affordable,
           },
           { status: 402 },
@@ -150,15 +161,18 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Record total usage once (retries + loud failure log)
+    // Record total usage once (retries → D1 dead-letter on failure). `recorded` tells
+    // the client loop whether used_zar was actually updated: if false, the chunk loop
+    // must STOP (it can no longer trust "remaining") — safety rule C6.
+    let recorded = true;
     if (isServiceConfigured() && totalCost > 0) {
       const userId = await getUserId();
       if (userId) {
-        await recordUsage(userId, totalCost, Object.keys(results).length, quality);
+        recorded = await recordUsage(userId, totalCost, Object.keys(results).length, quality);
       }
     }
 
-    return NextResponse.json({ status: "ended", results });
+    return NextResponse.json({ status: "ended", results, recorded });
   } catch (err) {
     console.error("Batch poll error:", err);
     return NextResponse.json({ error: "Batch retrieval failed." }, { status: 500 });

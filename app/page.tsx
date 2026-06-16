@@ -68,6 +68,31 @@ interface BatchResult {
   failed?: boolean;
 }
 
+// A PDF prepared for marking (pages extracted), carried through the batch/chunk loop.
+interface PreparedDoc {
+  customId: string;
+  name: string;
+  original: Uint8Array;
+  pages: PageContent[];
+}
+
+// A batch run paused at the over-limit dialog (P1-4). Holds everything needed to
+// resume as a chunked run if the user chooses "Mark in chunks".
+interface ChunkCtx {
+  from: Folder;
+  to: Folder;
+  prepared: PreparedDoc[];   // unmarked PDFs, in submission order
+  others: FileEntry[];       // non-PDFs, moved only once the user commits
+  quality: "standard" | "high";
+  totalDocs: number;
+}
+
+// Outcome of a single batch-submit attempt.
+type SubmitResult =
+  | { kind: "submitted"; batchId: string; quality: string }
+  | { kind: "over"; affordable: number }
+  | { kind: "error"; code: string };
+
 export default function Home() {
   const [strictness, setStrictness] = useState(7);
   const [settings, setSettings]     = useState<Settings>(DEFAULT_SETTINGS);
@@ -98,6 +123,11 @@ export default function Home() {
   const [error, setError]       = useState<string | null>(null);
   const [message, setMessage]   = useState<string | null>(null);
   const [results, setResults]   = useState<BatchResult[]>([]);
+
+  // Over-limit chunk dialog (P1-4). `chunkCtx` non-null ⇒ the modal is open and a
+  // run is paused awaiting the user's choice; `chunkInfo` toggles the "more info" text.
+  const [chunkCtx, setChunkCtx]   = useState<ChunkCtx | null>(null);
+  const [chunkInfo, setChunkInfo] = useState(false);
 
   // Load saved settings on mount and seed default strictness
   useEffect(() => {
@@ -178,7 +208,8 @@ export default function Home() {
 
   const fromFolder = folders.find((f) => f.name === fromName);
   const toFolder   = folders.find((f) => f.name === toName);
-  const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy;
+  // Single-flight (C10): no new run while busy OR while the chunk dialog is open.
+  const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy && !chunkCtx;
 
   // Create a fresh, empty "Marked <date>" folder and use it as the destination.
   // Guaranteed empty, so it always passes the destination-empty check on Mark.
@@ -283,68 +314,239 @@ export default function Home() {
     await finish(from, done, "Done");
   }
 
-  // ── Batch: submit all papers to the 50%-cheaper Batch API, then stamp ─────
+  // Count of papers actually marked (excludes moved non-PDFs and failures).
+  const markedCount = (d: BatchResult[]) => d.filter((x) => !x.moved && !x.failed).length;
+
+  // One batch-submit attempt. The route returns 402 + `affordable` when the set is
+  // over budget (no batch is created in that case — nothing is sent to Anthropic).
+  async function submitChunk(docs: PreparedDoc[], quality: "standard" | "high"): Promise<SubmitResult> {
+    const res = await fetch("/api/mark/batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        memoText, subject, strictness, quality,
+        markTypes: settings.markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
+        papers: docs.map((p) => ({ customId: p.customId, pages: p.pages })),
+      }),
+    });
+    if (res.ok) {
+      const d = await res.json();
+      return { kind: "submitted", batchId: d.batchId, quality: d.quality ?? quality };
+    }
+    const d = (await res.json().catch(() => ({}))) as { error?: string; affordable?: number };
+    if (res.status === 402 && typeof d.affordable === "number") {
+      return { kind: "over", affordable: d.affordable };
+    }
+    return { kind: "error", code: typeof d.error === "string" ? d.error : "Batch submission failed" };
+  }
+
+  // submitChunk with bounded retries on a *transient* failure (C12). Plan/auth gate
+  // failures (FATAL_RUN_ERRORS) are never retried — they won't fix themselves.
+  async function submitWithRetry(docs: PreparedDoc[], quality: "standard" | "high", tries = 2): Promise<SubmitResult> {
+    let last: SubmitResult = { kind: "error", code: "Batch submission failed" };
+    for (let i = 0; i <= tries; i++) {
+      const r = await submitChunk(docs, quality);
+      if (r.kind !== "error") return r;
+      if (FATAL_RUN_ERRORS.has(r.code)) return r;
+      last = r;
+      if (i < tries) await new Promise((res) => setTimeout(res, 800 * (i + 1)));
+    }
+    return last;
+  }
+
+  // Stamp + write + remove-original for one chunk's results.
+  async function applyChunkResults(
+    results: Record<string, MarkResultLike | { error: string }>,
+    subset: PreparedDoc[],
+    from: Folder,
+    to: Folder,
+    done: BatchResult[],
+  ) {
+    const byId = new Map(subset.map((p) => [p.customId, p]));
+    for (const [cid, r] of Object.entries(results)) {
+      const p = byId.get(cid);
+      if (!p) continue;
+      if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0, failed: true }); continue; }
+      const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "");
+      const marked = await uniqueName(to.handle, p.name.replace(/\.pdf$/i, "") + " (marked).pdf");
+      await writeFile(to.handle, marked, bytes);
+      if (!settings.keepOriginals) await from.handle.removeEntry(p.name);
+      done.push({ name: marked, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
+    }
+  }
+
+  // ── Batch: submit to the 50%-cheaper Batch API, then stamp ────────────────
+  // If the whole job fits the allowance it's one batch (no dialog). If it's over
+  // budget we pause and offer "Mark in chunks" (P1-4) rather than reject outright.
   async function runBatch(from: Folder, to: Folder) {
     const batch  = [...files];
-    const pdfs   = batch.filter((e) => e.name.toLowerCase().endsWith(".pdf"));
+    const pdfs    = batch.filter((e) => e.name.toLowerCase().endsWith(".pdf"));
     const others = batch.filter((e) => !e.name.toLowerCase().endsWith(".pdf"));
     const done: BatchResult[] = [];
 
-    // Non-PDFs are just moved
+    // No PDFs → just move the non-PDFs.
+    if (pdfs.length === 0) {
+      for (const e of others) {
+        await moveFile(e.name, from.handle, to.handle);
+        done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
+      }
+      await finish(from, done, "Batch done");
+      return;
+    }
+
+    // Prepare every PDF (page extraction) up front.
+    const prepared: PreparedDoc[] = [];
+    for (let i = 0; i < pdfs.length; i++) {
+      setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
+      const file = await pdfs[i].handle.getFile();
+      const { original, pages } = await preparePaper(file);
+      prepared.push({ customId: `p${i}`, name: pdfs[i].name, original, pages });
+    }
+
+    // Probe the whole job. On an over-budget result the route creates NO batch —
+    // it rejects at the estimate gate, so nothing is charged and nothing is moved yet.
+    setProgress("Checking your allowance…");
+    const probe = await submitWithRetry(prepared, settings.markingQuality);
+
+    if (probe.kind === "error") throw new Error(probe.code);
+
+    if (probe.kind === "over") {
+      if (probe.affordable <= 0) {
+        // Not even one document fits — straight block; nothing was moved or marked.
+        setError(blockMessage("allowance_exhausted"));
+        return;
+      }
+      // Offer the choice. handleMark's finally clears `busy`; the modal owns the
+      // screen and canMark is disabled while chunkCtx is set (single-flight, C10).
+      setChunkCtx({ from, to, prepared, others, quality: settings.markingQuality, totalDocs: prepared.length });
+      return;
+    }
+
+    // Whole job fit → one normal batch.
     for (const e of others) {
       await moveFile(e.name, from.handle, to.handle);
       done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
     }
-
-    if (pdfs.length > 0) {
-      const prepared: { customId: string; name: string; original: Uint8Array; pages: PageContent[] }[] = [];
-      for (let i = 0; i < pdfs.length; i++) {
-        setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
-        const file = await pdfs[i].handle.getFile();
-        const { original, pages } = await preparePaper(file);
-        prepared.push({ customId: `p${i}`, name: pdfs[i].name, original, pages });
-      }
-
-      setProgress("Submitting batch…");
-      const submitRes = await fetch("/api/mark/batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          memoText, subject, strictness,
-          quality: settings.markingQuality,
-          markTypes: settings.markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
-          papers: prepared.map((p) => ({ customId: p.customId, pages: p.pages })),
-        }),
-      });
-      if (!submitRes.ok) throw new Error((await submitRes.json().catch(() => ({}))).error ?? "Batch submission failed");
-      const submit = await submitRes.json();
-
-      const results: Record<string, MarkResultLike | { error: string }> =
-        submit.results ?? (await pollBatch(submit.batchId, submit.quality ?? settings.markingQuality));
-
-      const byId = new Map(prepared.map((p) => [p.customId, p]));
-      for (const [cid, r] of Object.entries(results)) {
-        const p = byId.get(cid);
-        if (!p) continue;
-        if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0, failed: true }); continue; }
-        const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "");
-        const marked = await uniqueName(to.handle, p.name.replace(/\.pdf$/i, "") + " (marked).pdf");
-        await writeFile(to.handle, marked, bytes);
-        if (!settings.keepOriginals) await from.handle.removeEntry(p.name);
-        done.push({ name: marked, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
-      }
-    }
-
+    const { results, recorded } = await pollBatch(probe.batchId, probe.quality);
+    await applyChunkResults(results, prepared, from, to, done);
+    if (!recorded) setError("Your papers are marked, but we couldn’t finish updating your usage just now — it’ll catch up shortly.");
     await finish(from, done, "Batch done");
   }
 
-  async function pollBatch(batchId: string, quality: string): Promise<Record<string, MarkResultLike | { error: string }>> {
+  // ── The automatic chunk loop (P1-4) ──────────────────────────────────────
+  // Runs on its own once the user picks "Mark in chunks": size → submit → poll →
+  // record → re-check → repeat, until the documents run out or the allowance does.
+  // Obeys safety invariants C1–C16 (see docs/categories/01-payments-and-enforcement.md §11b).
+  async function startChunkLoop() {
+    const ctx = chunkCtx;
+    if (!ctx) return;
+    setChunkCtx(null);
+    setChunkInfo(false);
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    setResults([]);
+
+    const { from, to, quality } = ctx;
+    const done: BatchResult[] = [];
+    let remaining = [...ctx.prepared];
+
+    try {
+      // Commit the non-PDFs now that the user has opted in.
+      for (const e of ctx.others) {
+        await moveFile(e.name, from.handle, to.handle);
+        done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
+      }
+
+      let iterations = 0;
+      const maxIterations = ctx.prepared.length + 1; // C3 backstop: each pass marks ≥1 doc
+
+      while (remaining.length > 0) {
+        if (++iterations > maxIterations) throw new Error("chunk_loop_runaway"); // C3
+
+        setProgress(`Marking… ${markedCount(done)} of ${ctx.totalDocs} documents done`);
+
+        // Ask how many of the remaining docs fit right now.
+        const probe = await submitWithRetry(remaining, quality);
+        let submitted: { batchId: string; quality: string };
+        let chunkSize: number;
+
+        if (probe.kind === "submitted") {
+          submitted = probe;
+          chunkSize = remaining.length;
+        } else if (probe.kind === "over") {
+          if (probe.affordable <= 0) { setError(blockMessage("allowance_exhausted")); break; } // C1 stop
+          chunkSize = probe.affordable;
+          const sub = await submitWithRetry(remaining.slice(0, chunkSize), quality);
+          if (sub.kind !== "submitted") {
+            if (sub.kind === "over") { setError(blockMessage("allowance_exhausted")); break; }
+            throw new Error(sub.code);
+          }
+          submitted = sub;
+        } else {
+          throw new Error(probe.code); // C12 exhausted / C13 verification_failed
+        }
+
+        // C5: await completion AND the usage record before sizing the next chunk.
+        const { results, recorded } = await pollBatch(submitted.batchId, submitted.quality);
+        const chunkDocs = remaining.slice(0, chunkSize);
+        await applyChunkResults(results, chunkDocs, from, to, done);
+        remaining = remaining.slice(chunkSize); // C7: advance only after applying
+        window.dispatchEvent(new Event("allowance-refresh"));
+
+        // C6: a failed usage write leaves used_zar stale — we can no longer size the
+        // next chunk safely, so stop. The parked write reconciles later (Problem 8).
+        if (!recorded) {
+          setError("We couldn’t update your usage after that batch, so marking stopped to stay safe. The papers already marked are saved — please try the rest again in a minute.");
+          break;
+        }
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Marking failed.";
+      setError(
+        msg === "chunk_loop_runaway"
+          ? "Marking stopped unexpectedly. Some papers may be done — please check the folder and retry the rest."
+          : blockMessage(msg),
+      );
+    } finally {
+      setFiles(await listFiles(from.handle).catch(() => files));
+      setResults(done);
+      const marked = markedCount(done);
+      const leftover = remaining.length;
+      if (leftover > 0) {
+        setMessage(`Marked ${marked} of ${ctx.totalDocs} document${ctx.totalDocs === 1 ? "" : "s"}. The remaining ${leftover} ${leftover === 1 ? "is" : "are"} still in “${fromName}” — renew your plan to finish ${leftover === 1 ? "it" : "them"}.`);
+      } else {
+        setMessage(`Done. Marked ${marked} document${marked === 1 ? "" : "s"} and moved everything to “${toName}”.`);
+      }
+      setBusy(false);
+      setProgress(null);
+      window.dispatchEvent(new Event("allowance-refresh"));
+    }
+  }
+
+  // "Remove some documents" → cancel the run, back to the start. Nothing was
+  // submitted, moved, or marked, so there's nothing to undo.
+  function cancelChunk() {
+    setChunkCtx(null);
+    setChunkInfo(false);
+    setError(null);
+    setMessage(null);
+    setProgress(null);
+  }
+
+  // Poll a batch to completion. Returns its results plus whether usage was recorded
+  // server-side (C6). Throws after ~20 min so the caller can stop cleanly.
+  async function pollBatch(
+    batchId: string,
+    quality: string,
+  ): Promise<{ results: Record<string, MarkResultLike | { error: string }>; recorded: boolean }> {
     for (let attempt = 0; attempt < 240; attempt++) {
-      setProgress(attempt === 0 ? "Processing batch…" : `Processing batch… (${attempt * 5}s)`);
+      const base = chunkCtx ? "Processing chunk" : "Processing batch";
+      setProgress(attempt === 0 ? `${base}…` : `${base}… (${attempt * 5}s)`);
       const res = await fetch(`/api/mark/batch?id=${encodeURIComponent(batchId)}&quality=${quality}`);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Batch retrieval failed");
       const data = await res.json();
-      if (data.status === "ended") return data.results;
+      if (data.status === "ended") return { results: data.results, recorded: data.recorded !== false };
       await new Promise((r) => setTimeout(r, 5000));
     }
     throw new Error("Batch is taking longer than expected — it may still finish. Try again shortly.");
@@ -659,6 +861,57 @@ export default function Home() {
           setStrictness(s.defaultStrictness);
         }}
       />
+
+      {/* Over-limit dialog (P1-4) — shown when a batch is too big for the allowance.
+          Figures are documents only; never Rand (ADR-002). */}
+      {chunkCtx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6">
+            <h2 className="text-[17px] font-semibold text-slate-900">This batch is over your spending limit</h2>
+            <p className="text-[14px] text-slate-600 mt-2">
+              We estimate this run of{" "}
+              <strong>{chunkCtx.totalDocs} document{chunkCtx.totalDocs === 1 ? "" : "s"}</strong>{" "}
+              is more than your plan can mark right now.
+            </p>
+
+            <div className="mt-5 flex flex-col gap-2.5">
+              <button
+                onClick={startChunkLoop}
+                className="w-full rounded-xl py-3 bg-[var(--accent-600)] hover:bg-[var(--accent-700)] text-white text-[14px] font-semibold transition-colors"
+              >
+                Mark in chunks
+              </button>
+              <button
+                onClick={cancelChunk}
+                className="w-full rounded-xl py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[14px] font-medium transition-colors"
+              >
+                Remove some documents
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setChunkInfo((v) => !v)}
+              className="mt-4 flex items-center gap-1 text-[12px] font-medium text-slate-500 hover:text-slate-700"
+            >
+              <svg className={`w-3.5 h-3.5 transition-transform ${chunkInfo ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              How does “Mark in chunks” work?
+            </button>
+            {chunkInfo && (
+              <p className="mt-2 text-[12.5px] leading-relaxed text-slate-500">
+                We’ll mark your documents in smaller batches instead of all at once. After
+                each batch we check how much of your allowance is left and automatically send
+                the next one — getting smaller as you near your limit. Marking stops on its own
+                when your allowance runs out, so you only get through the documents your plan
+                covers; the rest are left untouched for after you renew. You don’t need to do
+                anything while it runs — just keep this tab open.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

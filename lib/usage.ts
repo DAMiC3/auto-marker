@@ -51,6 +51,34 @@ export function estimateBatchCostZar(papers: PaperPageSummary[], quality: "stand
   return usd * USD_TO_ZAR;
 }
 
+// Hard ceiling on documents in a single batch submission (P1-4 / safety rule C15).
+// Caps the blast radius of any single estimate miss. Enforced server-side in the
+// batch route, not just the client loop, so a buggy/hostile client can't bypass it.
+export const MAX_BATCH_DOCS = 100;
+
+// How many of the LEADING documents fit within `remainingZar` by the (conservative)
+// pre-flight estimate, capped at MAX_BATCH_DOCS. Documents are atomic — whole papers,
+// you can't mark half — so this returns a whole count. This is the chunk-sizing oracle
+// for the P1-4 loop: the client never sees Rand, it only learns how many documents it
+// may send next. Returns 0 when not even one more document fits (the loop's stop signal,
+// safety rule C1). Order matters — pass papers in submission order.
+export function affordableDocCount(
+  papers: PaperPageSummary[],
+  remainingZar: number,
+  quality: "standard" | "high",
+): number {
+  if (!(remainingZar > 0)) return 0; // also guards NaN/Infinity (C4)
+  let cumulative = 0;
+  let n = 0;
+  for (const p of papers) {
+    if (n >= MAX_BATCH_DOCS) break;
+    cumulative += estimateBatchCostZar([p], quality);
+    if (cumulative > remainingZar) break;
+    n++;
+  }
+  return n;
+}
+
 // Returns true if the user is BLOCKED from marking.
 // Enforced for EVERY plan, including 'none' (cap 0 → "no_plan" → blocked):
 // a user with no active plan has a R0 allowance and cannot mark.
