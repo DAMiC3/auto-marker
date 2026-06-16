@@ -353,10 +353,10 @@ The estimate is never trusted as a hard ceiling. When a batch is too big for the
 
 **B. The chunk loop — runs automatically and independently.** Once "Mark in chunks" is chosen the loop runs on its own, with **no further prompts**, until the documents run out or the allowance does:
 
-1. **Size the chunk.** Send the number of pages the estimate says the remaining allowance can handle, also capped at the hard ceiling of ~**100 documents**.
+1. **Size the chunk.** Add **whole documents** (papers are atomic — you can't mark half a paper) until the next document would push the estimate past what the remaining allowance can handle, capped at the hard ceiling of ~**100 documents**. The loop works *because* the per-page estimate is deliberately conservative (over-estimates): actual usually lands under, leaving a shrinking remainder for the next chunk (see safety rule C16).
 2. **Submit + wait.** The chunk is a normal Anthropic batch (full 50% batch discount, identical marking/stamping). Poll to completion.
-3. **Reconcile against actual cost.** Record the chunk's real `costZarBatch`:
-   - **Over the limit** → the amount it went over is **written off** (accepted loss, bounded to one chunk). The account is **blocked** and the user is told *"You've reached your usage limit."* The loop stops.
+3. **Reconcile against actual cost.** Record the chunk's real `costZarBatch` and re-read the profile:
+   - **Over the limit** (`used_zar ≥ cap` after recording) → the amount it went over is **written off** (accepted loss, bounded to one chunk). Marking stops because the cap is now reached — this is the **existing** block mechanism, not a new flag (see C9) — and the user is told *"You've reached your usage limit."*
    - **Still allowance left** → continue.
 4. **Shrink the next chunk.** Each successive chunk is sized smaller as the remaining allowance falls, down to a floor of **~R10 estimated per chunk** (internal figure, never shown). Once chunks reach the R10 floor they stay at R10 until the documents or the allowance run out. *Rationale:* smaller chunks near the limit keep the final write-off small; the R10 floor stops the loop doing hundreds of tiny round-trips.
 5. **Repeat** from step 1.
@@ -365,12 +365,47 @@ The estimate is never trusted as a hard ceiling. When a batch is too big for the
 
 Why this works: every chunk is reconciled against *actual* usage before the next is sent, so a wrong estimate overshoots by at most one chunk — never the whole job — and because the chunks shrink as the limit nears, even that last overshoot is small. Overshoot is explicitly accepted ("I will write off what is lost") in exchange for never blocking an honest user prematurely and never marking blind.
 
+**C. Safety invariants — the loop MUST obey these.** An automatic loop that submits batches, spends money, and runs unattended is dangerous if any of these is missed. These are requirements, not nice-to-haves.
+
+*Termination (the loop must always end):*
+- **C1 — Every iteration makes progress or stops.** A chunk always contains **≥ 1 whole document**. If not even one document fits the remaining allowance, the loop **stops** (limit-reached) — it must never spin sizing an empty chunk.
+- **C2 — The R10 floor is a floor on chunk *size*, not a refusal to finish.** When remaining allowance is below the next chunk's estimate, do **one final chunk** of the smallest unit (one document) — accept it may cross the cap (write-off) — then stop. The loop must not stall just because the tail doesn't divide evenly.
+- **C3 — Hard iteration ceiling as a backstop.** `maxIterations = documentCount` (each iteration marks ≥1 document, so it can't legitimately exceed that). If exceeded → abort + `notifyOps` (it signals a logic bug, not normal operation).
+- **C4 — Guard the arithmetic.** `estimatedCostPerPage > 0` always; a `0`/`NaN`/`Infinity` estimate **aborts** the loop, it never translates to "mark everything."
+
+*Money safety:*
+- **C5 — Strict sequencing, never pipeline.** submit → poll to completion → **await a confirmed `recordUsage`** → re-read `used_zar` → size next. Sizing against a not-yet-committed write would oversize and overspend.
+- **C6 — A failed `recordUsage` STOPS the loop.** If a chunk's usage write fails (and is parked in the D1 dead-letter buffer, Problem 8), the live `used_zar` is stale (too low). The loop can no longer trust "remaining," so it **halts immediately** rather than size another chunk against stale data, and tells the user to retry later. The parked event reconciles on the next successful write.
+- **C7 — Idempotency: each document is marked at most once.** Advance a "done" pointer only after a chunk is fully recorded; a transient error must never re-submit an already-marked chunk (that would double-charge **and** double-mark). Keyed on the per-paper `custom_id`.
+- **C8 — Overshoot is measured against the cap, on one chunk.** "Over the limit" = `used_zar ≥ cap` *after* recording — **not** "chunk actual > chunk estimate." A chunk that ran over its own estimate but stayed under the cap is fine; it just shrinks the next chunk. Only the single cap-crossing chunk is written off.
+
+*The block is not a new destructive state:*
+- **C9 — "Block the account" = the normal cap is now reached** (`used_zar ≥ cap` → `isBlocked` true via existing metering). The loop sets **no** new persistent "blocked" flag; a plan renewal (`set_plan` resets `used_zar`) restores access as usual. Never invent a separate lock that needs manual clearing.
+
+*Concurrency:*
+- **C10 — Single-flight.** While the loop runs, the UI **locks** all marking (no second run, no instant marking; quality/mark-type settings frozen). Two concurrent loops could each pass their own pre-flight and overshoot by more than one chunk. The server's per-chunk gate is the real backstop, but the client lock prevents the race up front.
+
+*Client lifecycle (the loop is browser-driven):*
+- **C11 — Tab close / reload mid-loop is safe for the user but leaks ≤1 chunk's cost to us.** Un-submitted documents are simply never sent (no overspend, no marking). But a chunk already *submitted* to Anthropic finishes server-side and is never retrieved/recorded → **we** pay Anthropic, the user isn't charged and doesn't get those papers. Bounded to **one in-flight chunk**. Mitigation now: warn *"keep this tab open while marking."* Mitigation later (roadmap): server-side batch tracking + resume. This is the existing closed-tab gap (Cat 4 §3.2); the loop inherits it, capped at one chunk.
+
+*Failure handling:*
+- **C12 — Bounded retries on a failed submit/poll** (≤ 2), then stop with *"Marked X of Y — couldn't continue, please try again."* A submit/poll failure is **never** read as allowance-exhausted and **never** silently re-marks.
+- **C13 — `verification_failed` from the gate stops the loop** (infra problem; distinct message and cause from the expected `allowance_exhausted` stop).
+- **C14 — Per-paper failures inside a chunk** are surfaced to the user (which documents failed), not auto-re-marked (could loop) and not silently dropped.
+
+*Server-side (defense in depth — the client loop is UX; the server is the enforcement):*
+- **C15 — The ~100-doc ceiling and the per-chunk estimate gate are enforced in the batch route**, not only the client. A buggy or hostile client still cannot submit a 10 000-doc batch, nor a chunk whose estimate already exceeds remaining.
+
+*Estimate assumption:*
+- **C16 — The per-page estimate must stay conservative.** The loop iterates and stays safe *because* actual usually lands under the estimate. If the estimate ever skews low, chunks cross the cap more often (more write-offs). Keep the image/text token budgets biased high; when recalibrating from `usage_events`, never tune below real observed costs.
+
 **Implementation sketch (not yet built):**
-- `lib/usage.ts`: `maxPagesForBudget(remainingZar, quality)`; constants `MAX_BATCH_DOCS = 100` and `MIN_CHUNK_ZAR = 10`.
+- `lib/usage.ts`: `maxDocsForBudget(remainingZar, quality, docs)` (returns whole documents that fit, ≥0); constants `MAX_BATCH_DOCS = 100`, `MIN_CHUNK_ZAR = 10`. Pure, unit-testable — test the termination edges (C1–C4): zero budget, one oversized document, NaN estimate.
 - Over-limit dialog component (the **A** copy above) with the "more info" disclosure; "Remove some documents" resets the run and routes back to start.
-- Client chunk loop (`app/page.tsx` / `lib/markPaper.ts`): runs automatically once opted in — size → submit → poll → record → re-read remaining → shrink → next; shows progress as "chunk k of …" **in documents/pages only**, and on overspend shows the block banner (`blockMessage("allowance_exhausted")`) and stops.
-- Batch route POST stays the per-chunk gate (it already estimates per submission); the new logic is the loop + dialog on top.
-- **Recalibrate constants from real data** (still worth doing): compare predicted vs actual `usage_events` costs and tune the token budgets. (Pairs with the drift query in P1-6.)
+- Client chunk loop (`app/page.tsx` / `lib/markPaper.ts`): runs automatically once opted in — size → submit → poll → **await record** → re-read remaining → shrink → next. Enforces C5 (sequencing), C6 (stop on record failure), C7 (done-pointer idempotency), C10 (a `loopRunning` lock that disables all other marking), C12 (≤2 submit retries then stop), and the C3 iteration ceiling. Progress shown as "chunk k — {done}/{total} documents" **in documents/pages only**; on `allowance_exhausted` shows the limit-reached banner, on `verification_failed` a distinct "try again later" banner (C13).
+- Batch route POST stays the per-chunk gate and must also enforce **C15** server-side: reject a submission over `MAX_BATCH_DOCS` or whose estimate already exceeds remaining (it already does the estimate part). **Reuse, don't re-derive:** the route's existing `402 { affordable }` response already computes how many documents fit — the loop can submit the remaining set, read `affordable`, send exactly that many, and repeat; `affordable === 0` means stop (C1). That keeps the sizing maths in one tested place server-side instead of duplicated on the client.
+- **Write-offs page ops:** when a chunk crosses the cap, `notifyOps` records that real money was eaten (you can't see it any other way, since the user never sees Rand).
+- **Recalibrate constants from real data** (still worth doing, and keep them conservative — C16): compare predicted vs actual `usage_events` costs and tune the token budgets. (Pairs with the drift query in P1-6.)
 
 ### Problem 8 — `recordUsage` can fail silently → free usage (P1-6) ✅ BUILT (2026-06-15)
 
