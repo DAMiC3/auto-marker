@@ -5,7 +5,7 @@ import { isServiceConfigured } from "@/lib/supabase/service";
 import { costZarBatch, type TokenUsage } from "@/lib/cost";
 import { recordUsage, estimateBatchCostZar, checkAllowance, type PaperPageSummary } from "@/lib/usage";
 import {
-  MODELS, type PageContent, type MarkTypeInput,
+  MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse, type MarkResponse,
 } from "@/lib/markingPrompt";
 
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
       custom_id: p.customId,
       params: {
         model,
-        max_tokens: 4096,
+        max_tokens: MAX_OUTPUT_TOKENS,
         system: buildSystem(strictness, markTypes, subject),
         messages: [{ role: "user" as const, content: buildContent(memoText, p.pages) }],
       },
@@ -133,11 +133,16 @@ export async function GET(req: NextRequest) {
       const cid = entry.custom_id;
       if (entry.result.type === "succeeded") {
         const msg = entry.result.message;
-        try {
-          const text = (msg.content[0] as { type: string; text: string }).text;
-          results[cid] = parseMarkResponse(text);
-        } catch {
-          results[cid] = { error: "Could not parse marking result." };
+        if (msg.stop_reason === "max_tokens") {
+          // Truncated JSON → later annotations missing. Don't half-mark silently.
+          results[cid] = { error: "This paper produced too many marks to fit in one pass — split it into fewer pages and re-run." };
+        } else {
+          try {
+            const text = (msg.content[0] as { type: string; text: string }).text;
+            results[cid] = parseMarkResponse(text);
+          } catch {
+            results[cid] = { error: "Could not parse marking result." };
+          }
         }
         totalCost += costZarBatch(model, msg.usage as TokenUsage);
       } else {

@@ -1,6 +1,6 @@
 # Category 2 — Marking & PDFs
 
-**Status:** ✅ Fully documented · **Last verified against code:** 2026-06-12
+**Status:** ✅ Fully documented · **Last verified against code:** 2026-06-16
 **Owner:** Michael Bernard
 
 This is the product engine: turn a folder of student PDFs + a memo into marked PDFs with ticks, scores, and notes stamped on. This category owns the **pipeline mechanics**. Category 1 governs whether a run is *allowed*; Category 5 owns *what we ask the model*; this owns *how a PDF becomes a marked PDF*.
@@ -110,7 +110,7 @@ The single-page app wires the whole flow. State lives here; storage is browser-l
 **Per run:** pick a **From** folder and a **To** folder (must differ), choose a **memo** from the archive (or "no memo"), set **subject** + **strictness**, pick **Instant** or **Batch**, hit **Mark**. `canMark` requires From ≠ To, files present, not busy.
 
 ### 6.1 `runInstant(from, to)`
-Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/api/mark` → stamp) → `writeFile(to, "<name> (marked).pdf", bytes)` → `removeEntry` from `from`. Non-PDFs are just **moved** (counted as `moved`, not marked).
+Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/api/mark` → stamp) → `writeFile(to, "<name> (marked).pdf", bytes)` → `removeEntry` from `from`. Non-PDFs are just **moved** (counted as `moved`, not marked). Each paper is wrapped in its own try/catch (P2-3): a per-paper failure is recorded as `failed` (shown "not marked"), the original is **left in From** to retry, and the loop continues. Only a `FATAL_RUN_ERRORS` gate code (plan/auth) aborts the whole run.
 
 ### 6.2 `runBatch(from, to)`
 1. Split PDFs vs others; **move** the non-PDFs.
@@ -149,7 +149,7 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 - **No OCR.** Image pages are sent as expensive vision tokens; a scanned memo yields no text at all. OCR-then-reason is Phase 5 (see Category 5).
 - **Batch needs the tab open** for the up-to-20-minute poll; closing it loses progress. Server-side batch tracking is an expansion-plan item.
 - **`mockResult()` is dead code** — routes 503 without a key instead.
-- **Whole-file failure granularity** in instant mode: an exception aborts the loop (the `From` list is re-read in the `catch`), so a mid-run failure can leave some papers unmarked. Per-paper resilience is a Category 4 concern.
+- **Per-paper failure isolation** (instant + batch): a single paper that fails (bad PDF, parse error, truncation) is recorded as "not marked" and left in From to retry; the run continues. Only a plan/auth gate error aborts the whole run (P2-3, resolved).
 - **Mark placement depends on `[y=…]` hints** from the text layer; pages that fall back to image rely on the model reading position from the picture (less precise).
 
 ---
@@ -162,8 +162,8 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 |----|-----|---------|---------------|
 | ~~**P2-1**~~ | ✅ | ~~**Output overwrite = data loss**~~ — **Resolved.** Three layers now: (1) the run is **blocked unless the destination folder starts empty** (`handleMark` lists it first and aborts with a message); (2) marked writes go through `uniqueName()`, which versions collisions as `"X (marked) (2).pdf"` instead of overwriting; (3) the new **"Keep for marking"** setting can leave the unmarked original in the source folder. | Done — `app/page.tsx` `handleMark`/`runInstant`/`runBatch`, `lib/fileSystem.ts` `uniqueName`/`fileExists`, `SettingsPanel` `keepOriginals`. |
 | **P2-2** | 🟠 | **Blank-page false-skip** — `isCanvasBlank` skips a page with < 0.2% ink; a faint or low-contrast real answer page can be dropped → **answers silently unmarked**. | Lower the threshold, or surface "N pages skipped as blank" to the user. |
-| **P2-3** | 🟠 | **Instant loop aborts on first error** → later papers left unmarked (batch isolates per-paper). | Wrap each paper in its own try/catch like the batch GET does. |
-| **P2-4** | 🟠 | **`max_tokens: 4096` truncation** — papers with many annotations can exceed it → JSON cut off → parse fails (whole paper in instant). (= P5-3) | Raise the cap, or split very large papers. |
+| ~~**P2-3**~~ | ✅ | ~~**Instant loop aborts on first error**~~ — **Resolved.** `runInstant` now wraps each paper in its own try/catch: a per-paper failure (bad PDF, parse error, truncation) is recorded as **"not marked"**, the original is **left in the From folder to retry**, and the loop **continues** with the next paper. Plan/auth gate errors (`allowance_exhausted`, `verification_failed`, `not_authenticated` — see `FATAL_RUN_ERRORS`) still abort the whole run, since every remaining paper would fail the same way. The finish banner reports `Marked N … M couldn't be marked`. | Done — `app/page.tsx` `runInstant`/`finish` + Results UI. |
+| **P2-4** | 🟠 | **Long papers still can't be fully marked (truncation).** *Mitigated, not fixed.* The output cap was raised `4096 → MAX_OUTPUT_TOKENS = 16000` (more headroom) and both routes now **detect `stop_reason === "max_tokens"`** and fail loudly (instant: 422; batch: per-paper error) instead of silently half-marking. But a genuinely long paper that exceeds 16k output **still isn't marked** — we now *report* the failure instead of *solving* it. The real fix is to **chunk the paper** (mark in page-range passes and merge the annotations) so any length is fully marked. (= P5-3) | Chunked/multi-pass marking that splits a paper into page ranges, marks each, and merges results — so length is never a hard wall. |
 | **P2-5** | 🟡 | **Memory pressure** — `preparePaper` slice-copies the whole PDF; `runBatch` holds *all* originals + pages in memory before submitting → OOM on large batches. | Stream/chunk; release bytes after submit. |
 | **P2-6** | 🟡 | **No image size cap** — fallback pages become base64 PNG with no resolution/size limit → very large request bodies. | Cap render resolution before encoding. |
 | **P2-7** | 🟡 | **Fixed extraction heuristics** — line-group (0.012) and blank (0.002) thresholds misbehave on unusual layouts → misgrouped lines / misplaced `y` hints. | Tune or make adaptive. |

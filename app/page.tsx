@@ -45,6 +45,12 @@ function blockMessage(code: string): string {
   }
 }
 
+// Error codes that mean *no* paper can succeed — a plan/auth gate, not a problem
+// with one paper. When marking hits one of these we abort the whole run (every
+// remaining paper would fail the same way). Any *other* error is specific to a
+// single paper, so we skip that paper and keep marking the rest (P2-3).
+const FATAL_RUN_ERRORS = new Set(["allowance_exhausted", "verification_failed", "not_authenticated"]);
+
 interface MarkResultLike {
   total: number;
   available: number;
@@ -252,16 +258,26 @@ export default function Home() {
     for (let i = 0; i < batch.length; i++) {
       const entry = batch[i];
       setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
-      if (entry.name.toLowerCase().endsWith(".pdf")) {
-        const file    = await entry.handle.getFile();
-        const outcome = await markInstant(file, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
-        const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
-        await writeFile(to.handle, marked, outcome.bytes);
-        if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
-        done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
-      } else {
-        await moveFile(entry.name, from.handle, to.handle);
-        done.push({ name: entry.name, total: 0, available: 0, percentage: 0, moved: true });
+      try {
+        if (entry.name.toLowerCase().endsWith(".pdf")) {
+          const file    = await entry.handle.getFile();
+          const outcome = await markInstant(file, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
+          const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
+          await writeFile(to.handle, marked, outcome.bytes);
+          if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
+          done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
+        } else {
+          await moveFile(entry.name, from.handle, to.handle);
+          done.push({ name: entry.name, total: 0, available: 0, percentage: 0, moved: true });
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Marking failed.";
+        // Plan/auth gate failure → every remaining paper fails too. Abort the run.
+        if (FATAL_RUN_ERRORS.has(msg)) throw e;
+        // A failure specific to this paper (bad PDF, truncation, parse error…):
+        // record it, leave the original untouched so it can be retried, and
+        // keep marking the rest of the batch instead of aborting (P2-3).
+        done.push({ name: entry.name, total: 0, available: 0, percentage: 0, failed: true });
       }
     }
     await finish(from, done, "Done");
@@ -310,7 +326,7 @@ export default function Home() {
       for (const [cid, r] of Object.entries(results)) {
         const p = byId.get(cid);
         if (!p) continue;
-        if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0 }); continue; }
+        if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0, failed: true }); continue; }
         const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "");
         const marked = await uniqueName(to.handle, p.name.replace(/\.pdf$/i, "") + " (marked).pdf");
         await writeFile(to.handle, marked, bytes);
@@ -337,8 +353,13 @@ export default function Home() {
   async function finish(from: Folder, done: BatchResult[], verb: string) {
     setFiles(await listFiles(from.handle));
     setResults(done);
-    const marked = done.filter((d) => !d.moved).length;
-    setMessage(`${verb}. Marked ${marked} paper${marked === 1 ? "" : "s"} and moved everything to “${toName}”.`);
+    const marked = done.filter((d) => !d.moved && !d.failed).length;
+    const failed = done.filter((d) => d.failed).length;
+    let msg = `${verb}. Marked ${marked} paper${marked === 1 ? "" : "s"} and moved everything to “${toName}”.`;
+    if (failed > 0) {
+      msg += ` ${failed} paper${failed === 1 ? "" : "s"} couldn’t be marked and ${failed === 1 ? "was" : "were"} left in “${fromName}” to retry.`;
+    }
+    setMessage(msg);
   }
 
   return (
@@ -608,6 +629,8 @@ export default function Home() {
                   <span className="text-[13px] text-slate-700 truncate mr-3">{r.name}</span>
                   {r.moved ? (
                     <span className="text-[12px] text-slate-400 shrink-0">moved</span>
+                  ) : r.failed ? (
+                    <span className="text-[12px] font-semibold text-red-500 shrink-0 bg-red-50 px-3 py-1 rounded-full">not marked</span>
                   ) : (
                     <span
                       className={`text-[13px] font-bold px-3 py-1 rounded-full shrink-0 ${

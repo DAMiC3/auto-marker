@@ -10,6 +10,14 @@ export const MODELS = {
 
 export type Quality = keyof typeof MODELS;
 
+// Output-token ceiling for a single marking call. Each annotation is tiny in the
+// short-key form (~30–40 tokens), so 16k leaves room for ~400 annotations plus the
+// summary — far beyond any real paper. The old 4096 cap truncated the JSON on long
+// papers, dropping the later annotations so the bottom of the test came back
+// unmarked (P2-4 / P5-3). 16k is the safe non-streaming default; both models
+// (sonnet-4-6 → 64k, opus-4-7 → 128k) support far more if ever needed.
+export const MAX_OUTPUT_TOKENS = 16000;
+
 // A page is either extracted text (cheap) or a fallback image (for scans/diagrams).
 export type PageContent =
   | { kind: "text"; text: string }

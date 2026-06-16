@@ -4,7 +4,7 @@ import { isServiceConfigured } from "@/lib/supabase/service";
 import { costZar, type TokenUsage } from "@/lib/cost";
 import { checkAllowance, recordUsage } from "@/lib/usage";
 import {
-  MODELS, type PageContent, type MarkTypeInput,
+  MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse,
 } from "@/lib/markingPrompt";
 
@@ -50,10 +50,19 @@ export async function POST(req: NextRequest) {
 
     const message = await client.messages.create({
       model,
-      max_tokens: 4096,
+      max_tokens: MAX_OUTPUT_TOKENS,
       system: buildSystem(strictness, markTypes, subject),
       messages: [{ role: "user", content: buildContent(memoText, pages) }],
     });
+
+    // If we still hit the ceiling the JSON is truncated — later annotations are
+    // missing and the paper would be silently half-marked. Fail loudly instead.
+    if (message.stop_reason === "max_tokens") {
+      return NextResponse.json(
+        { error: "This paper produced more marks than fit in one pass, so it wasn’t marked (to avoid leaving the end unmarked). Try splitting it into fewer pages." },
+        { status: 422 }
+      );
+    }
 
     const raw    = (message.content[0] as { type: string; text: string }).text;
     const result = parseMarkResponse(raw);
