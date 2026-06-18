@@ -9,7 +9,6 @@ export type { PageContent } from "@/lib/markingPrompt";
 export interface PreparedPaper {
   original: Uint8Array;
   pages: PageContent[];
-  skippedBlank: number;   // image pages dropped as blank (P2-2) — surfaced to the user
 }
 
 export interface MarkOutcome {
@@ -18,7 +17,6 @@ export interface MarkOutcome {
   available: number;
   percentage: number;
   summary: string;
-  skippedBlank: number;
 }
 
 // ── pdf.js (browser) ─────────────────────────────────────────────────────────
@@ -67,7 +65,6 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
   const pdfjs = await getPdfjs();
   const pdf   = await pdfjs.getDocument({ data: original.slice(0) }).promise;
   const pages: PageContent[] = [];
-  let skippedBlank = 0;
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page     = await pdf.getPage(i);
@@ -107,16 +104,15 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvas, canvasContext: ctx, viewport: vp }).promise;
 
-      // Skip truly blank pages entirely — don't waste tokens sending them.
-      // Count the skips so the UI can warn (P2-2): a wrongly-dropped faint page
-      // would otherwise vanish without a trace.
-      if (isCanvasBlank(ctx, canvas.width, canvas.height)) { skippedBlank++; continue; }
+      // Skip truly blank pages entirely — don't waste tokens sending them. The
+      // threshold is kept low (see isCanvasBlank) so a faint real page isn't dropped.
+      if (isCanvasBlank(ctx, canvas.width, canvas.height)) continue;
 
       pages.push({ kind: "image", data: canvas.toDataURL("image/png").split(",")[1] });
     }
   }
 
-  return { original, pages, skippedBlank };
+  return { original, pages };
 }
 
 /** Best-effort memo text extraction (digital PDF text layer / .txt). */
@@ -271,7 +267,7 @@ export async function markInstant(
   markTypes: MarkType[],
   quality: "standard" | "high" = "standard"
 ): Promise<MarkOutcome> {
-  const { original, pages, skippedBlank } = await preparePaper(file);
+  const { original, pages } = await preparePaper(file);
 
   const res = await fetch("/api/mark", {
     method: "POST",
@@ -295,6 +291,5 @@ export async function markInstant(
     available: data.available ?? 0,
     percentage: data.percentage ?? 0,
     summary: data.summary ?? "",
-    skippedBlank,
   };
 }
