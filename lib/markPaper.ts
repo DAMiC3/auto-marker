@@ -9,6 +9,7 @@ export type { PageContent } from "@/lib/markingPrompt";
 export interface PreparedPaper {
   original: Uint8Array;
   pages: PageContent[];
+  skippedBlank: number;   // image pages dropped as blank (P2-2) — surfaced to the user
 }
 
 export interface MarkOutcome {
@@ -17,6 +18,7 @@ export interface MarkOutcome {
   available: number;
   percentage: number;
   summary: string;
+  skippedBlank: number;
 }
 
 // ── pdf.js (browser) ─────────────────────────────────────────────────────────
@@ -49,8 +51,10 @@ function isCanvasBlank(ctx: CanvasRenderingContext2D, w: number, h: number): boo
     if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) nonWhite++;
     sampled++;
   }
-  // Blank if under 0.2% of sampled pixels carry any ink
-  return sampled > 0 && nonWhite / sampled < 0.002;
+  // Blank only if under 0.05% of sampled pixels carry any ink. Kept deliberately
+  // low so a faint or low-contrast real answer page isn't mistaken for blank and
+  // silently dropped (P2-2) — a truly empty page still sits at ~0% ink.
+  return sampled > 0 && nonWhite / sampled < 0.0005;
 }
 
 /**
@@ -63,6 +67,7 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
   const pdfjs = await getPdfjs();
   const pdf   = await pdfjs.getDocument({ data: original.slice(0) }).promise;
   const pages: PageContent[] = [];
+  let skippedBlank = 0;
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page     = await pdf.getPage(i);
@@ -102,14 +107,16 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
       const ctx = canvas.getContext("2d")!;
       await page.render({ canvas, canvasContext: ctx, viewport: vp }).promise;
 
-      // Skip truly blank pages entirely — don't waste tokens sending them
-      if (isCanvasBlank(ctx, canvas.width, canvas.height)) continue;
+      // Skip truly blank pages entirely — don't waste tokens sending them.
+      // Count the skips so the UI can warn (P2-2): a wrongly-dropped faint page
+      // would otherwise vanish without a trace.
+      if (isCanvasBlank(ctx, canvas.width, canvas.height)) { skippedBlank++; continue; }
 
       pages.push({ kind: "image", data: canvas.toDataURL("image/png").split(",")[1] });
     }
   }
 
-  return { original, pages };
+  return { original, pages, skippedBlank };
 }
 
 /** Best-effort memo text extraction (digital PDF text layer / .txt). */
@@ -264,7 +271,7 @@ export async function markInstant(
   markTypes: MarkType[],
   quality: "standard" | "high" = "standard"
 ): Promise<MarkOutcome> {
-  const { original, pages } = await preparePaper(file);
+  const { original, pages, skippedBlank } = await preparePaper(file);
 
   const res = await fetch("/api/mark", {
     method: "POST",
@@ -288,5 +295,6 @@ export async function markInstant(
     available: data.available ?? 0,
     percentage: data.percentage ?? 0,
     summary: data.summary ?? "",
+    skippedBlank,
   };
 }

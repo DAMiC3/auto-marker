@@ -79,6 +79,14 @@ interface PreparedDoc {
   name: string;
   original: Uint8Array;
   pages: PageContent[];
+  skippedBlank: number;   // pages dropped as blank during prep (P2-2)
+}
+
+// Heads-up appended to the result banner when blank-looking pages were skipped, so a
+// wrongly-dropped faint page (P2-2) is visible to the user rather than silent.
+function blankNote(n: number): string {
+  if (n <= 0) return "";
+  return ` Heads-up: ${n} page${n === 1 ? "" : "s"} looked blank and ${n === 1 ? "was" : "were"} skipped — if a marked paper seems short, open the original and check for a faint page.`;
 }
 
 // A batch run paused at the over-limit dialog (P1-4). Holds everything needed to
@@ -291,6 +299,7 @@ export default function Home() {
   async function runInstant(from: Folder, to: Folder) {
     const batch = [...files];
     const done: BatchResult[] = [];
+    let blankSkipped = 0;
     for (let i = 0; i < batch.length; i++) {
       const entry = batch[i];
       setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
@@ -301,6 +310,7 @@ export default function Home() {
           const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
           await writeFile(to.handle, marked, outcome.bytes);
           if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
+          blankSkipped += outcome.skippedBlank;
           done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
         } else {
           // Not a PDF → leave it where it is and report it (P2-8).
@@ -316,7 +326,7 @@ export default function Home() {
         done.push({ name: entry.name, total: 0, available: 0, percentage: 0, failed: true });
       }
     }
-    await finish(from, done, "Done");
+    await finish(from, done, "Done", blankSkipped);
   }
 
   // Count of papers actually marked (excludes skipped non-PDFs and failures).
@@ -401,8 +411,8 @@ export default function Home() {
     for (let i = 0; i < pdfs.length; i++) {
       setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
       const file = await pdfs[i].handle.getFile();
-      const { original, pages } = await preparePaper(file);
-      prepared.push({ customId: `p${i}`, name: pdfs[i].name, original, pages });
+      const { original, pages, skippedBlank } = await preparePaper(file);
+      prepared.push({ customId: `p${i}`, name: pdfs[i].name, original, pages, skippedBlank });
     }
 
     // Probe the whole job. On an over-budget result the route creates NO batch —
@@ -429,7 +439,7 @@ export default function Home() {
     const { results, recorded } = await pollBatch(probe.batchId, probe.quality);
     await applyChunkResults(results, prepared, from, to, done);
     if (!recorded) setError("Your papers are marked, but we couldn’t finish updating your usage just now — it’ll catch up shortly.");
-    await finish(from, done, "Batch done");
+    await finish(from, done, "Batch done", prepared.reduce((s, p) => s + p.skippedBlank, 0));
   }
 
   // ── The automatic chunk loop (P1-4) ──────────────────────────────────────
@@ -509,11 +519,11 @@ export default function Home() {
       setResults(done);
       const marked = markedCount(done);
       const leftover = remaining.length;
-      if (leftover > 0) {
-        setMessage(`Marked ${marked} of ${ctx.totalDocs} document${ctx.totalDocs === 1 ? "" : "s"}. The remaining ${leftover} ${leftover === 1 ? "is" : "are"} still in “${fromName}” — renew your plan to finish ${leftover === 1 ? "it" : "them"}.`);
-      } else {
-        setMessage(`Done. Marked ${marked} document${marked === 1 ? "" : "s"} into “${toName}”.`);
-      }
+      const blankSkipped = ctx.prepared.reduce((s, p) => s + p.skippedBlank, 0);
+      const base = leftover > 0
+        ? `Marked ${marked} of ${ctx.totalDocs} document${ctx.totalDocs === 1 ? "" : "s"}. The remaining ${leftover} ${leftover === 1 ? "is" : "are"} still in “${fromName}” — renew your plan to finish ${leftover === 1 ? "it" : "them"}.`
+        : `Done. Marked ${marked} document${marked === 1 ? "" : "s"} into “${toName}”.`;
+      setMessage(base + blankNote(blankSkipped));
       setBusy(false);
       setProgress(null);
       window.dispatchEvent(new Event("allowance-refresh"));
@@ -548,7 +558,7 @@ export default function Home() {
     throw new Error("Batch is taking longer than expected — it may still finish. Try again shortly.");
   }
 
-  async function finish(from: Folder, done: BatchResult[], verb: string) {
+  async function finish(from: Folder, done: BatchResult[], verb: string, blankSkipped = 0) {
     setFiles(await listFiles(from.handle));
     setResults(done);
     const marked  = done.filter((d) => !d.skipped && !d.failed).length;
@@ -561,6 +571,7 @@ export default function Home() {
     if (skipped > 0) {
       msg += ` ${skipped} non-PDF file${skipped === 1 ? "" : "s"} ${skipped === 1 ? "was" : "were"} left untouched in “${fromName}”.`;
     }
+    msg += blankNote(blankSkipped);
     setMessage(msg);
   }
 
