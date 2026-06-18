@@ -150,7 +150,9 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   }
 
   function removeMark(id: string) {
-    setMarkTypes((prev) => prev.filter((m) => m.id !== id));
+    // Always keep at least one mark type. An empty list leaves the marking
+    // prompt's shapeList blank, so Claude has no shapes to mark with (P3-1).
+    setMarkTypes((prev) => (prev.length <= 1 ? prev : prev.filter((m) => m.id !== id)));
   }
 
   function addMark() {
@@ -389,11 +391,12 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
                       className="flex-1 min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-[13px] text-slate-800 outline-none focus:border-[var(--accent-500)]"
                     />
 
-                    {/* Remove */}
+                    {/* Remove (disabled on the last one — at least one mark type is required) */}
                     <button
                       onClick={() => removeMark(m.id)}
-                      className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
-                      title="Remove"
+                      disabled={markTypes.length <= 1}
+                      className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                      title={markTypes.length <= 1 ? "At least one mark type is required" : "Remove"}
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />

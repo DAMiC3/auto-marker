@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
-type Mode = "signin" | "signup";
+type Mode = "signin" | "signup" | "reset";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -31,6 +31,23 @@ export default function LoginPage() {
     }
 
     const supabase = createClient();
+
+    if (mode === "reset") {
+      // Send a recovery link. It routes through /auth/callback (which exchanges
+      // the code for a session) and then on to /reset-password to set a new one.
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${location.origin}/auth/callback?next=/reset-password`,
+      });
+      if (error) {
+        setError(error.message);
+        setLoading(false);
+        return;
+      }
+      // Don't reveal whether the email is registered.
+      setNotice("If that email is registered, a password-reset link is on its way. Check your inbox.");
+      setLoading(false);
+      return;
+    }
 
     if (mode === "signin") {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -85,10 +102,10 @@ export default function LoginPage() {
         {/* Card */}
         <div className="bg-[#161E2E] rounded-2xl border border-white/10 px-8 py-8">
           <h1 className="text-white text-[18px] font-semibold mb-1">
-            {mode === "signin" ? "Welcome back" : "Create your account"}
+            {mode === "signin" ? "Welcome back" : mode === "signup" ? "Create your account" : "Reset your password"}
           </h1>
           <p className="text-slate-400 text-[13px] mb-6">
-            {mode === "signin" ? "Sign in to continue" : "Start marking in minutes"}
+            {mode === "signin" ? "Sign in to continue" : mode === "signup" ? "Start marking in minutes" : "Enter your email and we’ll send a reset link"}
           </p>
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -111,16 +128,18 @@ export default function LoginPage() {
               required
               className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[var(--accent-500)] focus:ring-1 focus:ring-[var(--accent-500)] transition"
             />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete={mode === "signin" ? "current-password" : "new-password"}
-              required
-              minLength={6}
-              className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[var(--accent-500)] focus:ring-1 focus:ring-[var(--accent-500)] transition"
-            />
+            {mode !== "reset" && (
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                required
+                minLength={6}
+                className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[var(--accent-500)] focus:ring-1 focus:ring-[var(--accent-500)] transition"
+              />
+            )}
 
             {error && <p className="text-red-400 text-[13px]">{error}</p>}
             {notice && <p className="text-emerald-400 text-[13px]">{notice}</p>}
@@ -132,15 +151,31 @@ export default function LoginPage() {
                 loading ? "bg-[var(--accent-600)]/40 cursor-not-allowed" : "bg-[var(--accent-600)] hover:bg-[var(--accent-700)]"
               }`}
             >
-              {loading ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+              {loading ? "Please wait…" : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
             </button>
           </form>
 
+          {mode === "signin" && (
+            <button
+              onClick={() => { setMode("reset"); setError(""); setNotice(""); }}
+              className="mt-4 w-full text-center text-[13px] text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              Forgot your password?
+            </button>
+          )}
+
           <button
-            onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); setNotice(""); }}
-            className="mt-5 w-full text-center text-[13px] text-slate-400 hover:text-slate-200 transition-colors"
+            onClick={() => {
+              setMode(mode === "signin" ? "signup" : "signin");
+              setError(""); setNotice("");
+            }}
+            className="mt-3 w-full text-center text-[13px] text-slate-400 hover:text-slate-200 transition-colors"
           >
-            {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
+            {mode === "signin"
+              ? "New here? Create an account"
+              : mode === "signup"
+              ? "Already have an account? Sign in"
+              : "Back to sign in"}
           </button>
         </div>
 

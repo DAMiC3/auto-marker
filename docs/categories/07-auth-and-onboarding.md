@@ -76,6 +76,26 @@ The login page handles *both* confirmation-on and confirmation-off, so the real 
 
 ---
 
+## 4b. Password reset — BUILT 2026-06-16 (P7-2 / P3-2)
+
+A forgotten-password recovery flow, deliberately built to **reuse the existing `/auth/callback` code-exchange** rather than add a second exchange path.
+
+```
+1. /login → "Forgot your password?" (mode "reset", email-only form)
+2. resetPasswordForEmail(email, { redirectTo: ${origin}/auth/callback?next=/reset-password })
+3. Supabase emails a recovery link → ${origin}/auth/callback?code=…&next=/reset-password
+4. /auth/callback exchanges the code for a (recovery) session, redirects to /reset-password
+5. /reset-password (signed in via the recovery session) → updateUser({ password })
+6. Success → router.push("/") (already signed in) → into the app
+```
+
+- **Login surface:** `app/login/page.tsx` gained a third mode `"reset"` (email-only; password field hidden). The notice is deliberately **non-committal** — *"If that email is registered, a password-reset link is on its way"* — so it doesn't reveal which emails exist.
+- **Reset page:** `app/reset-password/page.tsx` — checks for the recovery session on mount (`getUser()`); shows the new-password form (password + confirm, `minLength 6`) when present, or a *"link invalid or expired → back to sign in"* message when not.
+- **No middleware change.** `/reset-password` is a **protected** route: the user arrives already signed in (the callback set the session), so middleware lets them through. A bad/expired link never reaches it — the callback sends those to `/login?error=auth`, exactly like a failed confirmation (so the silent-`?error=auth` gap, P7-6, applies here too).
+- **Config dependency (same as §4):** `${origin}/auth/callback` must be in Supabase Auth's allowed redirect URLs, and the **recovery** email template must point at it. Deploy-checklist item (P7-10).
+
+---
+
 ## 5. Profile creation — `handle_new_user()` trigger
 
 - Trigger **`on_auth_user_created`** fires on **`auth.users` INSERT** (at signup, *before* confirmation), inserting a `profiles` row with `id` + `full_name` (from `raw_user_meta_data->>'full_name'`). Everything else takes defaults → **`plan='none'`, cap 0, used 0** (Cat 1 §4.3, Cat 6 §5.1).
@@ -135,7 +155,7 @@ What a brand-new lecturer actually experiences today:
 
 - **No onboarding / help system** — first-run is a bare empty state; no tour, no help button (Phase 1). Biggest UX gap, shared with Cat 3 §10.
 - **No self-serve trial** — new users are blocked until a manual SQL grant (§8). Phase 2.
-- **No password-reset flow** — the login page has sign-in/sign-up only; there's **no "forgot password"** link or reset handling. A real production gap (`supabase.auth.resetPasswordForEmail` isn't wired anywhere).
+- ~~**No password-reset flow**~~ — **BUILT 2026-06-16** (§4b). Login page now has a "Forgot your password?" path; `/reset-password` sets the new password.
 - **Silent `?error=auth`** — failed confirmation links show no message (§4).
 - **Middleware has no `try/catch`** around `getUser()` — auth outage isn't degraded (§2, Cat 4 §7).
 - **Email-confirmation friction** — Lila is the live proof a user can sign up and get permanently stuck; no resend-confirmation UI exists.
@@ -167,7 +187,7 @@ What a brand-new lecturer actually experiences today:
 | ID | Sev | Problem | Fix direction |
 |----|-----|---------|---------------|
 | **P7-1** | 🔴 | **First-run dead-ends** — a confirmed, signed-in user lands at R0/blocked with **no self-serve path** (no trial button, no guidance); only a manual `set_plan` unblocks them. | Build the self-serve "Start free trial" button (Phase 2) + onboarding (Phase 1). |
-| **P7-2** | 🔴 | **No password-reset flow** — `resetPasswordForEmail` is wired nowhere; a user who forgets their password is stuck. (= P3-2) | Add "Forgot password?" + reset page + callback handling. |
+| ~~**P7-2**~~ | ✅ | ~~**No password-reset flow** — `resetPasswordForEmail` is wired nowhere; a user who forgets their password is stuck. (= P3-2)~~ — **FIXED 2026-06-16** (see §4b): "Forgot your password?" on the login page → `resetPasswordForEmail` → existing `/auth/callback` → `app/reset-password/page.tsx` → `updateUser({ password })`. | Done. |
 | **P7-3** | 🟠 | **Anonymous sign-ins enabled** *(advisor 0012; + 2 orphaned anon users)* — anyone can create an anonymous session and pass middleware into the app shell. | Disable anonymous sign-in in Supabase Auth (unless intentionally used). |
 | **P7-4** | 🟠 | **Weak password security** — leaked-password protection is **disabled** *(advisor)*, and the only rule is `minLength 6`. | Enable HaveIBeenPwned check; raise minimum length / add strength rules. |
 | **P7-5** | 🔴 | **Middleware no `try/catch`** around `getUser()` → auth outage breaks page loads. (= P4-1) | Wrap + degrade gracefully. |
@@ -186,8 +206,9 @@ What a brand-new lecturer actually experiences today:
 | `lib/supabase/server.ts` | Server client (cookie-bound, acts as user) |
 | `lib/supabase/service.ts` | Service-role client (bypasses RLS) |
 | `middleware.ts` | Edge auth gate (redirects, public prefixes) |
-| `app/login/page.tsx` | Sign-in / sign-up UI + logic |
-| `app/auth/callback/route.ts` | Email-confirmation / code-exchange handler |
+| `app/login/page.tsx` | Sign-in / sign-up / **reset** UI + logic |
+| `app/reset-password/page.tsx` | Set-new-password page (recovery session → `updateUser`); see §4b |
+| `app/auth/callback/route.ts` | Email-confirmation / code-exchange handler (reused by the reset flow) |
 | `components/Sidebar.tsx`, `components/SettingsPanel.tsx` | Sign-out entry points |
 | DB: `handle_new_user()` + `on_auth_user_created` | Auto-creates the profile at signup |
 | `auth.users`, `auth.identities` | Supabase-managed identity store |
