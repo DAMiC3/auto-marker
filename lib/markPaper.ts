@@ -31,6 +31,12 @@ async function getPdfjs() {
 
 interface TextItemish { str?: string; transform?: number[] }
 
+// Cap the rendered fallback image so a large-format page (A3, posters, oversized
+// scans) can't balloon the request body and vision-token cost. The longest side is
+// clamped to this many pixels; the 1.6 render scale is only used when it stays under
+// the cap (P2-6).
+const MAX_IMAGE_DIM = 2000;
+
 /** True if a rendered page is essentially empty (almost all white pixels). */
 function isCanvasBlank(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
   const data = ctx.getImageData(0, 0, w, h).data;
@@ -86,8 +92,10 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
         .join("\n");
       pages.push({ kind: "text", text });
     } else {
-      // No text layer → render to check it, then either skip (blank) or send as image
-      const vp     = page.getViewport({ scale: 1.6 });
+      // No text layer → render to check it, then either skip (blank) or send as image.
+      // Clamp the render scale so the longest side never exceeds MAX_IMAGE_DIM (P2-6).
+      const scale  = Math.min(1.6, MAX_IMAGE_DIM / Math.max(viewport.width, viewport.height));
+      const vp     = page.getViewport({ scale });
       const canvas = document.createElement("canvas");
       canvas.width  = vp.width;
       canvas.height = vp.height;

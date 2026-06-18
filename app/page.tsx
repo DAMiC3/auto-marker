@@ -17,7 +17,6 @@ import {
   ensurePermission,
   listFolders,
   listFiles,
-  moveFile,
   writeFile,
   uniqueName,
   createMarkedFolder,
@@ -64,8 +63,14 @@ interface BatchResult {
   total: number;
   available: number;
   percentage: number;
-  moved?: boolean;
+  skipped?: boolean;   // non-PDF, left untouched in From (P2-8)
   failed?: boolean;
+}
+
+// P2-8: AutoMark only ever touches PDFs. Non-PDFs are left untouched in the From
+// folder and listed as "skipped" — we never move files the user didn't ask us to mark.
+function recordSkipped(others: FileEntry[], done: BatchResult[]) {
+  for (const e of others) done.push({ name: e.name, total: 0, available: 0, percentage: 0, skipped: true });
 }
 
 // A PDF prepared for marking (pages extracted), carried through the batch/chunk loop.
@@ -82,7 +87,7 @@ interface ChunkCtx {
   from: Folder;
   to: Folder;
   prepared: PreparedDoc[];   // unmarked PDFs, in submission order
-  others: FileEntry[];       // non-PDFs, moved only once the user commits
+  others: FileEntry[];       // non-PDFs, left in place and reported as skipped (P2-8)
   quality: "standard" | "high";
   totalDocs: number;
 }
@@ -298,8 +303,8 @@ export default function Home() {
           if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
           done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
         } else {
-          await moveFile(entry.name, from.handle, to.handle);
-          done.push({ name: entry.name, total: 0, available: 0, percentage: 0, moved: true });
+          // Not a PDF → leave it where it is and report it (P2-8).
+          done.push({ name: entry.name, total: 0, available: 0, percentage: 0, skipped: true });
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Marking failed.";
@@ -314,8 +319,8 @@ export default function Home() {
     await finish(from, done, "Done");
   }
 
-  // Count of papers actually marked (excludes moved non-PDFs and failures).
-  const markedCount = (d: BatchResult[]) => d.filter((x) => !x.moved && !x.failed).length;
+  // Count of papers actually marked (excludes skipped non-PDFs and failures).
+  const markedCount = (d: BatchResult[]) => d.filter((x) => !x.skipped && !x.failed).length;
 
   // One batch-submit attempt. The route returns 402 + `affordable` when the set is
   // over budget (no batch is created in that case — nothing is sent to Anthropic).
@@ -384,12 +389,9 @@ export default function Home() {
     const others = batch.filter((e) => !e.name.toLowerCase().endsWith(".pdf"));
     const done: BatchResult[] = [];
 
-    // No PDFs → just move the non-PDFs.
+    // No PDFs → nothing to mark; the non-PDFs are left in place (P2-8).
     if (pdfs.length === 0) {
-      for (const e of others) {
-        await moveFile(e.name, from.handle, to.handle);
-        done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
-      }
+      recordSkipped(others, done);
       await finish(from, done, "Batch done");
       return;
     }
@@ -422,11 +424,8 @@ export default function Home() {
       return;
     }
 
-    // Whole job fit → one normal batch.
-    for (const e of others) {
-      await moveFile(e.name, from.handle, to.handle);
-      done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
-    }
+    // Whole job fit → one normal batch. Non-PDFs are left in place (P2-8).
+    recordSkipped(others, done);
     const { results, recorded } = await pollBatch(probe.batchId, probe.quality);
     await applyChunkResults(results, prepared, from, to, done);
     if (!recorded) setError("Your papers are marked, but we couldn’t finish updating your usage just now — it’ll catch up shortly.");
@@ -452,11 +451,8 @@ export default function Home() {
     let remaining = [...ctx.prepared];
 
     try {
-      // Commit the non-PDFs now that the user has opted in.
-      for (const e of ctx.others) {
-        await moveFile(e.name, from.handle, to.handle);
-        done.push({ name: e.name, total: 0, available: 0, percentage: 0, moved: true });
-      }
+      // Non-PDFs are left untouched in From and reported as skipped (P2-8).
+      recordSkipped(ctx.others, done);
 
       let iterations = 0;
       const maxIterations = ctx.prepared.length + 1; // C3 backstop: each pass marks ≥1 doc
@@ -516,7 +512,7 @@ export default function Home() {
       if (leftover > 0) {
         setMessage(`Marked ${marked} of ${ctx.totalDocs} document${ctx.totalDocs === 1 ? "" : "s"}. The remaining ${leftover} ${leftover === 1 ? "is" : "are"} still in “${fromName}” — renew your plan to finish ${leftover === 1 ? "it" : "them"}.`);
       } else {
-        setMessage(`Done. Marked ${marked} document${marked === 1 ? "" : "s"} and moved everything to “${toName}”.`);
+        setMessage(`Done. Marked ${marked} document${marked === 1 ? "" : "s"} into “${toName}”.`);
       }
       setBusy(false);
       setProgress(null);
@@ -555,11 +551,15 @@ export default function Home() {
   async function finish(from: Folder, done: BatchResult[], verb: string) {
     setFiles(await listFiles(from.handle));
     setResults(done);
-    const marked = done.filter((d) => !d.moved && !d.failed).length;
-    const failed = done.filter((d) => d.failed).length;
-    let msg = `${verb}. Marked ${marked} paper${marked === 1 ? "" : "s"} and moved everything to “${toName}”.`;
+    const marked  = done.filter((d) => !d.skipped && !d.failed).length;
+    const failed  = done.filter((d) => d.failed).length;
+    const skipped = done.filter((d) => d.skipped).length;
+    let msg = `${verb}. Marked ${marked} paper${marked === 1 ? "" : "s"} into “${toName}”.`;
     if (failed > 0) {
       msg += ` ${failed} paper${failed === 1 ? "" : "s"} couldn’t be marked and ${failed === 1 ? "was" : "were"} left in “${fromName}” to retry.`;
+    }
+    if (skipped > 0) {
+      msg += ` ${skipped} non-PDF file${skipped === 1 ? "" : "s"} ${skipped === 1 ? "was" : "were"} left untouched in “${fromName}”.`;
     }
     setMessage(msg);
   }
@@ -829,8 +829,8 @@ export default function Home() {
               {results.map((r) => (
                 <div key={r.name} className="flex items-center justify-between border border-slate-100 rounded-xl px-4 py-3">
                   <span className="text-[13px] text-slate-700 truncate mr-3">{r.name}</span>
-                  {r.moved ? (
-                    <span className="text-[12px] text-slate-400 shrink-0">moved</span>
+                  {r.skipped ? (
+                    <span className="text-[12px] text-slate-400 shrink-0">not a PDF — left in place</span>
                   ) : r.failed ? (
                     <span className="text-[12px] font-semibold text-red-500 shrink-0 bg-red-50 px-3 py-1 rounded-full">not marked</span>
                   ) : (

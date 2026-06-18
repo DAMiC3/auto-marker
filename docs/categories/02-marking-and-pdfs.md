@@ -1,6 +1,6 @@
 # Category 2 — Marking & PDFs
 
-**Status:** ✅ Fully documented · **Last verified against code:** 2026-06-16
+**Status:** ✅ Fully documented · **Last verified against code:** 2026-06-18
 **Owner:** Michael Bernard
 
 This is the product engine: turn a folder of student PDFs + a memo into marked PDFs with ticks, scores, and notes stamped on. This category owns the **pipeline mechanics**. Category 1 governs whether a run is *allowed*; Category 5 owns *what we ask the model*; this owns *how a PDF becomes a marked PDF*.
@@ -56,7 +56,7 @@ The heart of the cost strategy. Loads the PDF with `pdf.js`, then **per page**:
    - Items are **grouped into lines** when their `y` is within `0.012` of an existing line, then lines sorted top→bottom, parts within a line sorted left→right by `x`.
    - Output is one string, one line each: `"[y=0.30] the answer text here"`. Those `[y=…]` hints are what let Claude place a mark next to the right answer.
 3. **If no text layer → it's a scan/diagram:**
-   - Render the page to a canvas at **scale 1.6**.
+   - Render the page to a canvas at **scale 1.6**, clamped so the longest side stays ≤ `MAX_IMAGE_DIM` (2000px) — oversized pages render smaller (P2-6).
    - **Blank check** (`isCanvasBlank`): samples ~1 pixel in every 16; if **< 0.2%** of sampled pixels carry ink, the page is treated as blank and **skipped entirely** (no tokens spent).
    - Otherwise emit an `image` page: `canvas.toDataURL("image/png")` (base64 stripped of the `data:` prefix).
 
@@ -110,10 +110,10 @@ The single-page app wires the whole flow. State lives here; storage is browser-l
 **Per run:** pick a **From** folder and a **To** folder (must differ), choose a **memo** from the archive (or "no memo"), set **subject** + **strictness**, pick **Instant** or **Batch**, hit **Mark**. `canMark` requires From ≠ To, files present, not busy.
 
 ### 6.1 `runInstant(from, to)`
-Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/api/mark` → stamp) → `writeFile(to, "<name> (marked).pdf", bytes)` → `removeEntry` from `from`. Non-PDFs are just **moved** (counted as `moved`, not marked). Each paper is wrapped in its own try/catch (P2-3): a per-paper failure is recorded as `failed` (shown "not marked"), the original is **left in From** to retry, and the loop continues. Only a `FATAL_RUN_ERRORS` gate code (plan/auth) aborts the whole run.
+Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/api/mark` → stamp) → `writeFile(to, "<name> (marked).pdf", bytes)` → `removeEntry` from `from`. Non-PDFs are **left untouched in From** and recorded as `skipped` (P2-8) — AutoMark only moves/marks PDFs. Each paper is wrapped in its own try/catch (P2-3): a per-paper failure is recorded as `failed` (shown "not marked"), the original is **left in From** to retry, and the loop continues. Only a `FATAL_RUN_ERRORS` gate code (plan/auth) aborts the whole run.
 
 ### 6.2 `runBatch(from, to)`
-1. Split PDFs vs others; **move** the non-PDFs.
+1. Split PDFs vs others; the non-PDFs are **left in place** and reported as skipped (P2-8).
 2. **Prepare all PDFs client-side** (`preparePaper` each, with progress).
 3. POST all to `/api/mark/batch` → get `batchId`.
 4. `pollBatch(batchId)`: GET every **5 s**, up to **240 attempts (~20 min)**, until `status === "ended"`; throws a "taking longer than expected" message past that.
@@ -124,6 +124,7 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 - The original is **deleted from From** after a successful write — **unless** the `keepOriginals` setting ("Keep for marking") is on, in which case the unmarked original stays put (P2-1).
 - **Destination must start empty:** `handleMark` lists the To folder first and **blocks the run** with a message if it isn't empty, so marked papers never mix with / overwrite prior output (P2-1).
 - **"Create new folder for marked documents"** (button under the To picker → `handleCreateMarkedFolder` → `createMarkedFolder(root)`): makes a fresh, always-empty `"Marked <YYYY-MM-DD>"` subfolder (versioned `" (2)"`, `" (3)"`… per day) and selects it as the destination — the one-click way to satisfy the empty-destination rule.
+- **Non-PDFs are never touched** — they stay in the From folder and are listed as "not a PDF — left in place" in the Results, with a count in the finish banner (P2-8). AutoMark only ever moves/marks PDFs.
 - On finish, a success banner summarises counts; an `allowance-refresh` window event fires so the Category 1 `AllowanceBar` updates.
 - `error === "allowance_exhausted"` is rewritten to a friendly "You've used up your plan's allowance…" message.
 
@@ -165,9 +166,9 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 | ~~**P2-3**~~ | ✅ | ~~**Instant loop aborts on first error**~~ — **Resolved.** `runInstant` now wraps each paper in its own try/catch: a per-paper failure (bad PDF, parse error, truncation) is recorded as **"not marked"**, the original is **left in the From folder to retry**, and the loop **continues** with the next paper. Plan/auth gate errors (`allowance_exhausted`, `verification_failed`, `not_authenticated` — see `FATAL_RUN_ERRORS`) still abort the whole run, since every remaining paper would fail the same way. The finish banner reports `Marked N … M couldn't be marked`. | Done — `app/page.tsx` `runInstant`/`finish` + Results UI. |
 | **P2-4** | 🟠 | **Long papers still can't be fully marked (truncation).** *Mitigated, not fixed.* The output cap was raised `4096 → MAX_OUTPUT_TOKENS = 16000` (more headroom) and both routes now **detect `stop_reason === "max_tokens"`** and fail loudly (instant: 422; batch: per-paper error) instead of silently half-marking. But a genuinely long paper that exceeds 16k output **still isn't marked** — we now *report* the failure instead of *solving* it. The real fix is to **chunk the paper** (mark in page-range passes and merge the annotations) so any length is fully marked. (= P5-3) | Chunked/multi-pass marking that splits a paper into page ranges, marks each, and merges results — so length is never a hard wall. |
 | **P2-5** | 🟡 | **Memory pressure** — `preparePaper` slice-copies the whole PDF; `runBatch` holds *all* originals + pages in memory before submitting → OOM on large batches. | Stream/chunk; release bytes after submit. |
-| **P2-6** | 🟡 | **No image size cap** — fallback pages become base64 PNG with no resolution/size limit → very large request bodies. | Cap render resolution before encoding. |
+| ~~**P2-6**~~ | ✅ | ~~**No image size cap**~~ — **Resolved.** `preparePaper` now clamps the fallback render scale so the longest side never exceeds `MAX_IMAGE_DIM = 2000px` (`scale = min(1.6, 2000 / longestSide)`). Normal A4 pages are unaffected (still scale 1.6); only oversized pages (A3/posters/large scans) are scaled down before `toDataURL`, capping request-body and vision-token bloat. | Done — `lib/markPaper.ts` `MAX_IMAGE_DIM`. |
 | **P2-7** | 🟡 | **Fixed extraction heuristics** — line-group (0.012) and blank (0.002) thresholds misbehave on unusual layouts → misgrouped lines / misplaced `y` hints. | Tune or make adaptive. |
-| **P2-8** | 🟡 | **Non-PDFs blindly moved** to the To folder (may move files the user didn't intend to touch). | Confirm / filter what gets moved. |
+| ~~**P2-8**~~ | ✅ | ~~**Non-PDFs blindly moved**~~ — **Resolved.** AutoMark now only ever touches PDFs. Non-PDFs are **left untouched in the From folder** and listed as **"not a PDF — left in place"** in the Results (and counted in the finish banner) across all three paths — instant, batch, and the chunk loop (`recordSkipped`). The `moveFile` call is gone from the marking flow. | Done — `app/page.tsx` `recordSkipped` + `runInstant`/`runBatch`/`startChunkLoop`. |
 | **P2-9** | 🔵 | **Not built** — Chrome/Edge-only picker (Phase 1), no OCR (Phase 5), batch needs the tab open (Phase 1/3). | Expansion plan. |
 
 ---
