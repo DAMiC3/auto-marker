@@ -81,6 +81,35 @@ interface PreparedDoc {
   pages: PageContent[];
 }
 
+// Pre-flight memory guard for batch prep (P2-5). A real browser OOM kills the tab
+// with no catchable error, so we estimate the prepared payload as we go and stop
+// *before* the tab dies. Prep happens before anything is submitted, charged, or
+// moved, so bailing here is always safe. Typed PDFs are tiny (~tens of MB for 100);
+// this only trips on image-heavy / scanned batches, where each page is a multi-MB
+// base64 string. Conservative ceiling for a desktop Chrome/Edge tab.
+const BATCH_MEMORY_BUDGET = 600 * 1024 * 1024; // ~600 MB of prepared payload
+
+// Rough in-memory size of one prepared doc: the original PDF bytes plus each page's
+// payload. Base64 image strings dominate; extracted text is negligible. JS strings
+// are UTF-16, so a page string costs ~2 bytes per character.
+function preparedBytes(d: PreparedDoc): number {
+  let n = d.original.byteLength;
+  for (const p of d.pages) n += (p.kind === "image" ? p.data.length : p.text.length) * 2;
+  return n;
+}
+
+// Shown when a batch is too big to hold in browser memory — tells the user to split
+// it into smaller runs (P2-5). `reached` is the 0-based index of the PDF that tipped
+// it over (or failed to allocate).
+function memoryGuardMessage(reached: number, total: number): string {
+  return (
+    `This batch is too large to process in your browser’s memory — it stopped while preparing ` +
+    `PDF ${reached + 1} of ${total} (usually scanned or image-heavy PDFs, which are far bigger than ` +
+    `typed ones). Nothing was marked, charged, or moved. Mark fewer PDFs at a time — split it into ` +
+    `two or more smaller runs — and they’ll all go through.`
+  );
+}
+
 // A batch run paused at the over-limit dialog (P1-4). Holds everything needed to
 // resume as a chunked run if the user chooses "Mark in chunks".
 interface ChunkCtx {
@@ -128,6 +157,8 @@ export default function Home() {
   const [error, setError]       = useState<string | null>(null);
   const [message, setMessage]   = useState<string | null>(null);
   const [results, setResults]   = useState<BatchResult[]>([]);
+  const [addingMemo, setAddingMemo] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   // Over-limit chunk dialog (P1-4). `chunkCtx` non-null ⇒ the modal is open and a
   // run is paused awaiting the user's choice; `chunkInfo` toggles the "more info" text.
@@ -168,6 +199,34 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
+  // Restore the last run's Results so a refresh doesn't blank the card (P3-5).
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("automark.lastResults") || "null") as BatchResult[] | null;
+      if (Array.isArray(saved) && saved.length > 0) setResults(saved);
+    } catch { /* ignore malformed cache */ }
+  }, []);
+
+  // Auto-dismiss the banners so they don't linger; both are also manually dismissible (P3-5).
+  useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(() => setMessage(null), 8000);
+    return () => clearTimeout(t);
+  }, [message]);
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 15000);
+    return () => clearTimeout(t);
+  }, [error]);
+
+  // Persist / clear the Results card across refreshes (P3-5).
+  function persistResults(done: BatchResult[]) {
+    try {
+      if (done.length > 0) localStorage.setItem("automark.lastResults", JSON.stringify(done));
+      else localStorage.removeItem("automark.lastResults");
+    } catch { /* ignore quota / serialization errors */ }
+  }
+
   // Try to silently reconnect to a previously chosen folder
   useEffect(() => {
     (async () => {
@@ -186,6 +245,7 @@ export default function Home() {
     setMessage(null);
     try {
       const handle = await pickRoot();
+      setConnecting(true);
       if (!(await ensurePermission(handle))) {
         setError("Permission to access the folder was not granted.");
         return;
@@ -199,6 +259,8 @@ export default function Home() {
       // User cancelling the picker throws — ignore that case quietly
       if (e instanceof DOMException && e.name === "AbortError") return;
       setError(e instanceof Error ? e.message : "Could not open the folder.");
+    } finally {
+      setConnecting(false);
     }
   }, []);
 
@@ -234,6 +296,7 @@ export default function Home() {
     const file = await pickFile();
     if (!file) return;
     setError(null);
+    setAddingMemo(true);
     try {
       const text = await extractMemoText(file).catch(() => "");
       const memo: Memo = { id: `memo-${Date.now()}`, name: file.name, addedAt: Date.now(), text, blob: file };
@@ -243,6 +306,8 @@ export default function Home() {
       setSelectedMemoId(memo.id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Could not add memo.");
+    } finally {
+      setAddingMemo(false);
     }
   }
 
@@ -272,6 +337,7 @@ export default function Home() {
     setError(null);
     setMessage(null);
     setResults([]);
+    persistResults([]);
 
     try {
       if (mode === "batch") await runBatch(fromFolder, toFolder);
@@ -396,13 +462,30 @@ export default function Home() {
       return;
     }
 
-    // Prepare every PDF (page extraction) up front.
+    // Prepare every PDF (page extraction) up front, watching the running memory
+    // footprint so a huge (usually scanned) batch can't silently OOM the tab (P2-5).
     const prepared: PreparedDoc[] = [];
+    let usedBytes = 0;
     for (let i = 0; i < pdfs.length; i++) {
       setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
       const file = await pdfs[i].handle.getFile();
-      const { original, pages } = await preparePaper(file);
-      prepared.push({ customId: `p${i}`, name: pdfs[i].name, original, pages });
+      let doc: PreparedDoc;
+      try {
+        const { original, pages } = await preparePaper(file);
+        doc = { customId: `p${i}`, name: pdfs[i].name, original, pages };
+      } catch (e) {
+        // An allocation failure mid-prep (RangeError: array buffer / string too long)
+        // means we're already at the ceiling — surface the same friendly guidance.
+        if (e instanceof RangeError) { setError(memoryGuardMessage(i, pdfs.length)); return; }
+        throw e;
+      }
+      usedBytes += preparedBytes(doc);
+      if (usedBytes > BATCH_MEMORY_BUDGET) {
+        // Stop before preparing any more — nothing has been submitted/charged/moved yet.
+        setError(memoryGuardMessage(i, pdfs.length));
+        return;
+      }
+      prepared.push(doc);
     }
 
     // Probe the whole job. On an over-budget result the route creates NO batch —
@@ -445,6 +528,7 @@ export default function Home() {
     setError(null);
     setMessage(null);
     setResults([]);
+    persistResults([]);
 
     const { from, to, quality } = ctx;
     const done: BatchResult[] = [];
@@ -507,6 +591,7 @@ export default function Home() {
     } finally {
       setFiles(await listFiles(from.handle).catch(() => files));
       setResults(done);
+      persistResults(done);
       const marked = markedCount(done);
       const leftover = remaining.length;
       if (leftover > 0) {
@@ -551,6 +636,7 @@ export default function Home() {
   async function finish(from: Folder, done: BatchResult[], verb: string) {
     setFiles(await listFiles(from.handle));
     setResults(done);
+    persistResults(done);
     const marked  = done.filter((d) => !d.skipped && !d.failed).length;
     const failed  = done.filter((d) => d.failed).length;
     const skipped = done.filter((d) => d.skipped).length;
@@ -608,9 +694,10 @@ export default function Home() {
                 {!root && (
                   <button
                     onClick={handleConnect}
-                    className="px-4 py-2 rounded-lg bg-[var(--accent-600)] hover:bg-[var(--accent-700)] text-white text-[13px] font-medium transition-colors"
+                    disabled={connecting}
+                    className="px-4 py-2 rounded-lg bg-[var(--accent-600)] hover:bg-[var(--accent-700)] text-white text-[13px] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    Connect your files
+                    {connecting ? "Connecting…" : "Connect your files"}
                   </button>
                 )}
               </div>
@@ -677,9 +764,10 @@ export default function Home() {
                       <div className="flex items-center gap-3">
                         <button
                           onClick={handleAddMemo}
-                          className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors"
+                          disabled={addingMemo}
+                          className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                         >
-                          + Add memo
+                          {addingMemo ? "Adding…" : "+ Add memo"}
                         </button>
                         <span className="text-[13px] text-slate-400">
                           Your memo archive is empty. Add one to reuse it across batches.
@@ -699,10 +787,11 @@ export default function Home() {
                         </select>
                         <button
                           onClick={handleAddMemo}
-                          className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors shrink-0"
+                          disabled={addingMemo}
+                          className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
                           title="Add a memo to the archive"
                         >
-                          + Add
+                          {addingMemo ? "Adding…" : "+ Add"}
                         </button>
                         {selectedMemoId && (
                           <button
@@ -758,15 +847,33 @@ export default function Home() {
             </div>
           )}
 
-          {/* Error / success banners */}
+          {/* Error / success banners — dismissible + auto-dismiss (P3-5) */}
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-5 py-4 text-[14px]">
-              {error}
+            <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-5 py-4 text-[14px] flex items-start gap-3">
+              <span className="flex-1">{error}</span>
+              <button
+                onClick={() => setError(null)}
+                aria-label="Dismiss"
+                className="shrink-0 -mr-1 -mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center text-red-400 hover:bg-red-100 hover:text-red-600 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           )}
           {message && (
-            <div className="bg-green-50 border border-green-200 text-green-700 rounded-xl px-5 py-4 text-[14px]">
-              {message}
+            <div className="bg-green-50 border border-green-200 text-green-700 rounded-xl px-5 py-4 text-[14px] flex items-start gap-3">
+              <span className="flex-1">{message}</span>
+              <button
+                onClick={() => setMessage(null)}
+                aria-label="Dismiss"
+                className="shrink-0 -mr-1 -mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center text-green-500 hover:bg-green-100 hover:text-green-700 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
           )}
 

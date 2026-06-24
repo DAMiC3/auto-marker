@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import MarkShapeIcon, { type MarkShape, MARK_SHAPES } from "@/components/MarkShapeIcon";
@@ -143,6 +143,52 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
     })().catch(() => {});
   }, [open]);
 
+  // Accessibility (P3-6): Esc-to-close, a focus trap, and focus management for the
+  // slide-over. Focus moves into the panel on open and returns to the trigger on close.
+  // onClose is read via a ref so a new prop identity doesn't re-run (and re-steal focus).
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    const prevActive = document.activeElement as HTMLElement | null;
+    const focusables = () =>
+      panel
+        ? Array.from(
+            panel.querySelectorAll<HTMLElement>(
+              'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+            ),
+          ).filter((el) => el.offsetParent !== null)
+        : [];
+    (focusables()[0] ?? panel)?.focus();
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") { e.preventDefault(); onCloseRef.current(); return; }
+      if (e.key !== "Tab") return;
+      const els = focusables();
+      if (els.length === 0) return;
+      const firstEl = els[0], lastEl = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === firstEl) { e.preventDefault(); lastEl.focus(); }
+      else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      // Restore focus to the trigger. The account-menu item that opens this panel
+      // unmounts (the menu closes) as the panel opens, so prevActive is often <body>;
+      // fall back to the account-menu button so focus is never stranded (P3-6).
+      // Deferred a frame: unmounting the focused panel moves focus to <body>, and we
+      // must set focus *after* that so it isn't immediately clobbered.
+      const keep = prevActive && prevActive !== document.body && prevActive.isConnected ? prevActive : null;
+      requestAnimationFrame(() => {
+        const target = keep && keep.isConnected
+          ? keep
+          : document.querySelector<HTMLElement>('[aria-label="Account menu"]');
+        target?.focus?.();
+      });
+    };
+  }, [open]);
+
   if (!open) return null;
 
   function updateMark(id: string, patch: Partial<MarkType>) {
@@ -179,10 +225,17 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
 
       {/* Slide-over panel */}
-      <div className="relative w-full max-w-md h-full bg-white shadow-2xl flex flex-col animate-[slidein_0.2s_ease-out]">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        tabIndex={-1}
+        className="relative w-full max-w-md h-full bg-white shadow-2xl flex flex-col animate-[slidein_0.2s_ease-out] outline-none"
+      >
         {/* Header */}
         <div className="h-16 flex items-center justify-between px-6 border-b border-slate-200 shrink-0">
           <h2 className="text-[16px] font-semibold text-slate-900">Settings</h2>

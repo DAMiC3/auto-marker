@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Folder } from "@/lib/fileSystem";
 import { createClient } from "@/lib/supabase/client";
@@ -31,6 +31,16 @@ export default function Sidebar({
   const [menuOpen, setMenuOpen] = useState(false);
   const [showCreed, setShowCreed] = useState(false);
 
+  // Esc closes whichever popover/menu is open (P3-6 accessibility).
+  useEffect(() => {
+    if (!menuOpen && !showCreed) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") { setMenuOpen(false); setShowCreed(false); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen, showCreed]);
+
   async function handleSignOut() {
     setMenuOpen(false);
     await createClient().auth.signOut();
@@ -57,6 +67,8 @@ export default function Sidebar({
           onClick={() => setShowCreed((v) => !v)}
           title="About"
           aria-label="About the maker"
+          aria-haspopup="dialog"
+          aria-expanded={showCreed}
           className="ml-0.5 text-[#657BAA] hover:text-[#EFF4FE] transition-colors"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
@@ -135,8 +147,9 @@ export default function Sidebar({
           <>
             {/* click-away catcher */}
             <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-            <div className="absolute bottom-[72px] left-3 right-3 z-20 rounded-xl bg-[#161E2E] border border-white/10 shadow-xl overflow-hidden">
+            <div role="menu" aria-label="Account" className="absolute bottom-[72px] left-3 right-3 z-20 rounded-xl bg-[#161E2E] border border-white/10 shadow-xl overflow-hidden">
               <button
+                role="menuitem"
                 onClick={() => { setMenuOpen(false); onOpenSettings(); }}
                 className="flex items-center gap-2.5 w-full text-left px-4 py-3 text-[13px] text-[#EFF4FE] hover:bg-white/5 transition-colors"
               >
@@ -147,6 +160,7 @@ export default function Sidebar({
                 Settings
               </button>
               <button
+                role="menuitem"
                 onClick={handleSignOut}
                 className="flex items-center gap-2.5 w-full text-left px-4 py-3 text-[13px] text-red-300 hover:bg-white/5 transition-colors border-t border-white/[0.07]"
               >
@@ -161,6 +175,9 @@ export default function Sidebar({
 
         <button
           onClick={() => setMenuOpen((o) => !o)}
+          aria-haspopup="true"
+          aria-expanded={menuOpen}
+          aria-label="Account menu"
           className="flex items-center gap-3 w-full px-3 py-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-colors"
         >
           <div className="w-8 h-8 rounded-full bg-[var(--accent-600)] shrink-0 flex items-center justify-center text-[11px] font-bold text-white">

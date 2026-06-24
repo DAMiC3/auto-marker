@@ -138,7 +138,7 @@ mv open-next.config.ts.bak open-next.config.ts
 ---
 
 ## 10. Dependencies of note
-- **`mammoth ^1.12.0`** is a declared dependency (a `.docx` → text/HTML parser) but is **imported nowhere in source** (grep-confirmed; only in `package.json`/lockfile). It's aspirational — intended for `.docx` memo/answer parsing, matching the dead `UploadZone` `.docx` accept (Cat 3 §5.6). **Either wire it up or drop it.**
+- **`mammoth ^1.12.0`** is a declared dependency (a `.docx` → text/HTML parser) but is **imported nowhere in source** (grep-confirmed; only in `package.json`/lockfile). It's aspirational — intended for `.docx` memo/answer parsing (the dead `UploadZone` that shared the `.docx` ambition was deleted 2026-06-18, P3-3). **Either wire it up or drop it.**
 - Runtime deps are lean: `@anthropic-ai/sdk`, `@supabase/ssr` + `@supabase/supabase-js`, `pdf-lib`, `pdfjs-dist`, `next`, `react`/`react-dom`.
 
 ---
