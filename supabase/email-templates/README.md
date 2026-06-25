@@ -24,21 +24,35 @@ password**.
 
    (Set the subject in the field above the body editor.)
 
-## Don't change the link target
+## The link target — `token_hash` (cross-device safe)
 
-Each button and fallback link uses `{{ .ConfirmationURL }}` — Supabase's own
-verify URL. **Keep it as-is.** It redirects through our `/auth/callback`, which
-establishes the session and forwards to a friendly landing page
-(`/auth/confirmed` for sign-ups, `/reset-password` for recovery). Swapping it for
-a hand-built link can break that flow.
+Each button/fallback link is built as:
 
-## Redirect allow-list (one-time)
+```
+{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=<signup|recovery|magiclink>
+```
 
-For the links to come back to the app, **Authentication → URL Configuration**
-must allow our callback:
+**Keep this — don't swap it for `{{ .ConfirmationURL }}`.** We deliberately use the
+`token_hash` (OTP) pattern instead of the PKCE `?code=` link:
+
+- **PKCE (`?code=`)** only completes in the *same browser* that requested the email
+  (it needs a code-verifier cookie). Request a reset on a laptop, open it on a
+  phone → "invalid/expired". That was the original reset complaint.
+- **`token_hash`** is verified server-side by `/auth/callback` via
+  `supabase.auth.verifyOtp({ type, token_hash })` — **no same-device cookie
+  needed**, so the link works on any device.
+
+`type` drives where the user lands (see `app/auth/callback/route.ts`):
+`signup`/`magiclink` → `/auth/confirmed` ("You're all set!"); `recovery` →
+`/reset-password` (the link also carries `&next=/reset-password`).
+
+## Site URL is now required (one-time)
+
+Because the links are built from `{{ .SiteURL }}`, **Authentication → URL
+Configuration → Site URL must be exactly** the app origin or every link 404s:
 
 - **Site URL:** `https://auto-marker.bernardmanne3.workers.dev`
-- **Redirect URLs:** add `https://auto-marker.bernardmanne3.workers.dev/auth/callback`
+- **Redirect URLs:** also add `https://auto-marker.bernardmanne3.workers.dev/auth/callback`
   (and `http://localhost:3000/auth/callback` for local dev).
 
 ## Why the landing page changed too
