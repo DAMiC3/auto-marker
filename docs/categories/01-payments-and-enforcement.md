@@ -195,7 +195,7 @@ otherwise                         → { allowed: true, userId, profile }
 
 - **Fail-closed everywhere.** A Supabase/auth outage now *blocks* marking (it used to fail open on the instant route — P1-2). Better to turn a user away for a minute than mark unmetered.
 - **Ops gets paged** (`notifyOps`, `lib/notify.ts`) only on *genuine backend failures* (`verification_failed`) — not on the normal over-limit case, which would be alert spam. So a silent outage that's turning users away gets noticed. Channel: `OPS_ALERT_WEBHOOK_URL` (ntfy.sh) — see Category 3 §8.3.
-- **The user is told why.** The client maps each code to a plain-English banner via `blockMessage()` in `app/page.tsx` (e.g. *"We couldn't verify your plan just now … you weren't charged."*).
+- **The user is told why.** The client maps each code to a plain-English banner via `friendlyError()` in `app/page.tsx` (e.g. *"We couldn't verify your plan just now … you weren't charged."*); see Cat 3 §8.4.
 - Returns the `profile` on success so the batch route can run its overspend pre-flight without a second DB read.
 
 ### 6.4 `recordUsage(userId, costZar, papers, tier): Promise<boolean>`

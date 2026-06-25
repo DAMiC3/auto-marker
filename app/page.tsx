@@ -28,20 +28,62 @@ import type { Annotation } from "@/lib/markingPrompt";
 
 type MarkMode = "instant" | "batch";
 
-// Turn a route error code into a clear, user-facing message. Marking is fail-CLOSED:
+// Developer contact shown in the generic fallback error (P3-8).
+const DEV_CONTACT_EMAIL = "bernardmanne3@gmail.com";
+const GENERIC_ERROR =
+  `An error occurred. Please try again later. If this keeps happening, ` +
+  `please contact the developer at ${DEV_CONTACT_EMAIL}.`;
+
+// Map a thrown error to a clear, user-facing message. Marking is fail-CLOSED:
 // when a plan can't be verified (auth/DB error) the route blocks rather than mark
-// blind, so the user must be told *why* nothing was marked — not shown a raw code.
-function blockMessage(code: string): string {
-  switch (code) {
+// blind, so the user must be told *why* nothing was marked — never a raw code.
+// `recognized` is false for anything we have no specific message for — those are
+// unexpected, so the caller shows GENERIC_ERROR and pages the founder (reportError).
+function friendlyError(raw: string): { message: string; recognized: boolean } {
+  const r = raw.toLowerCase();
+
+  // Plan/auth gate codes (fail-closed).
+  switch (raw) {
     case "allowance_exhausted":
-      return "You’ve used up your plan’s allowance. Buy another plan to keep marking.";
+      return { message: "You’ve used up your plan’s allowance. Buy another plan to keep marking.", recognized: true };
     case "verification_failed":
-      return "We couldn’t verify your plan just now (a temporary system error), so nothing was marked. Please try again in a moment — you weren’t charged.";
+      return { message: "We couldn’t verify your plan just now (a temporary system error), so nothing was marked. Please try again in a moment — you weren’t charged.", recognized: true };
     case "not_authenticated":
-      return "Your session has expired. Please sign in again to keep marking.";
-    default:
-      return code;
+      return { message: "Your session has expired. Please sign in again to keep marking.", recognized: true };
   }
+
+  // Recognisable technical failures → plain language + a next step.
+  if (r.includes("pdf") && /(invalid|corrupt|parse|structure|password|encrypted|malformed)/.test(r))
+    return { message: "We couldn’t read one of the PDFs — it may be corrupted or password-protected. Re-save or re-export it and try again.", recognized: true };
+  if (r.includes("max_tokens") || r.includes("too long") || r.includes("truncat"))
+    return { message: "One of the papers was too long to mark in a single pass. Try splitting it into a smaller file and mark again.", recognized: true };
+  if (r.includes("taking longer than expected"))
+    return { message: raw, recognized: true }; // already a friendly batch-timeout sentence
+  if (r.includes("failed to fetch") || r.includes("networkerror") || r.includes("network error") || r.includes("load failed"))
+    return { message: "We couldn’t reach the server — check your internet connection and try again.", recognized: true };
+  if (r.includes("batch submission failed") || r.includes("batch retrieval failed"))
+    return { message: "The marking service didn’t respond just now. Please try again in a moment.", recognized: true };
+  if (r.includes("permission") || r.includes("notallowed") || r.includes("not allowed"))
+    return { message: "AutoMark doesn’t have permission to access that folder. Reconnect your files and allow access when prompted.", recognized: true };
+  if (r.includes("quota") || r.includes("storage"))
+    return { message: "Your device is out of free storage space, so the file couldn’t be saved. Free up some space and try again.", recognized: true };
+
+  // Unknown → generic message; the caller alerts the founder via reportError.
+  return { message: GENERIC_ERROR, recognized: false };
+}
+
+// Fire-and-forget founder alert for an *unexpected* error (P3-8). The /api/report-error
+// route adds who hit it (from the session cookie) and pushes it via notifyOps
+// (OPS_ALERT_WEBHOOK_URL). Never throws — reporting must not break the UI.
+function reportError(detail: string, context: string) {
+  try {
+    void fetch("/api/report-error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ detail, context }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* swallow */ }
 }
 
 // Error codes that mean *no* paper can succeed — a plan/auth gate, not a problem
@@ -258,7 +300,10 @@ export default function Home() {
     } catch (e: unknown) {
       // User cancelling the picker throws — ignore that case quietly
       if (e instanceof DOMException && e.name === "AbortError") return;
-      setError(e instanceof Error ? e.message : "Could not open the folder.");
+      const msg = e instanceof Error ? e.message : "Could not open the folder.";
+      const fe = friendlyError(msg);
+      setError(fe.message);
+      if (!fe.recognized) reportError(msg, "connect");
     } finally {
       setConnecting(false);
     }
@@ -270,7 +315,12 @@ export default function Home() {
       const folder = folders.find((f) => f.name === fromName);
       if (!folder) { setFiles([]); return; }
       setFiles(await listFiles(folder.handle));
-    })().catch((e) => setError(e instanceof Error ? e.message : "Could not read folder."));
+    })().catch((e) => {
+      const msg = e instanceof Error ? e.message : "Could not read folder.";
+      const fe = friendlyError(msg);
+      setError(fe.message);
+      if (!fe.recognized) reportError(msg, "list-files");
+    });
   }, [fromName, folders]);
 
   const fromFolder = folders.find((f) => f.name === fromName);
@@ -288,7 +338,10 @@ export default function Home() {
       setFolders(await listFolders(root));
       setToName(folder.name);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Could not create a marked-documents folder.");
+      const msg = e instanceof Error ? e.message : "Could not create a marked-documents folder.";
+      const fe = friendlyError(msg);
+      setError(fe.message);
+      if (!fe.recognized) reportError(msg, "create-folder");
     }
   }
 
@@ -305,7 +358,10 @@ export default function Home() {
       setMemos(updated);
       setSelectedMemoId(memo.id);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Could not add memo.");
+      const msg = e instanceof Error ? e.message : "Could not add memo.";
+      const fe = friendlyError(msg);
+      setError(fe.message);
+      if (!fe.recognized) reportError(msg, "add-memo");
     } finally {
       setAddingMemo(false);
     }
@@ -344,7 +400,9 @@ export default function Home() {
       else await runInstant(fromFolder, toFolder);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Marking failed.";
-      setError(blockMessage(msg));
+      const fe = friendlyError(msg);
+      setError(fe.message);
+      if (!fe.recognized) reportError(msg, "marking");
       setFiles(await listFiles(fromFolder.handle).catch(() => files));
     } finally {
       setBusy(false);
@@ -498,7 +556,7 @@ export default function Home() {
     if (probe.kind === "over") {
       if (probe.affordable <= 0) {
         // Not even one document fits — straight block; nothing was moved or marked.
-        setError(blockMessage("allowance_exhausted"));
+        setError(friendlyError("allowance_exhausted").message);
         return;
       }
       // Offer the choice. handleMark's finally clears `busy`; the modal owns the
@@ -555,11 +613,11 @@ export default function Home() {
           submitted = probe;
           chunkSize = remaining.length;
         } else if (probe.kind === "over") {
-          if (probe.affordable <= 0) { setError(blockMessage("allowance_exhausted")); break; } // C1 stop
+          if (probe.affordable <= 0) { setError(friendlyError("allowance_exhausted").message); break; } // C1 stop
           chunkSize = probe.affordable;
           const sub = await submitWithRetry(remaining.slice(0, chunkSize), quality);
           if (sub.kind !== "submitted") {
-            if (sub.kind === "over") { setError(blockMessage("allowance_exhausted")); break; }
+            if (sub.kind === "over") { setError(friendlyError("allowance_exhausted").message); break; }
             throw new Error(sub.code);
           }
           submitted = sub;
@@ -583,11 +641,14 @@ export default function Home() {
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Marking failed.";
-      setError(
-        msg === "chunk_loop_runaway"
-          ? "Marking stopped unexpectedly. Some papers may be done — please check the folder and retry the rest."
-          : blockMessage(msg),
-      );
+      if (msg === "chunk_loop_runaway") {
+        setError("Marking stopped unexpectedly. Some papers may be done — please check the folder and retry the rest.");
+        reportError(msg, "chunk-loop"); // a safety-invariant trip — shouldn't happen, so page the founder
+      } else {
+        const fe = friendlyError(msg);
+        setError(fe.message);
+        if (!fe.recognized) reportError(msg, "chunk-loop");
+      }
     } finally {
       setFiles(await listFiles(from.handle).catch(() => files));
       setResults(done);
