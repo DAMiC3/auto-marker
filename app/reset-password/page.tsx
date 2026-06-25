@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { authErrorMessage } from "@/lib/authErrors";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -44,7 +45,7 @@ export default function ResetPasswordPage() {
     const supabase = createClient();
     const { error } = await supabase.auth.updateUser({ password });
     if (error) {
-      setError(error.message);
+      setError(authErrorMessage(error.message));
       setLoading(false);
       return;
     }

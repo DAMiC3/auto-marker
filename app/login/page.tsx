@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { authErrorMessage } from "@/lib/authErrors";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -39,7 +40,7 @@ export default function LoginPage() {
         redirectTo: `${location.origin}/auth/callback?next=/reset-password`,
       });
       if (error) {
-        setError(error.message);
+        setError(authErrorMessage(error.message));
         setLoading(false);
         return;
       }
@@ -52,7 +53,7 @@ export default function LoginPage() {
     if (mode === "signin") {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        setError(error.message);
+        setError(authErrorMessage(error.message));
         setLoading(false);
         return;
       }
@@ -71,7 +72,7 @@ export default function LoginPage() {
       },
     });
     if (error) {
-      setError(error.message);
+      setError(authErrorMessage(error.message));
       setLoading(false);
       return;
     }
