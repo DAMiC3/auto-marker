@@ -64,15 +64,15 @@ The login page handles *both* confirmation-on and confirmation-off, so the real 
 - Of 6 auth users, **3 confirmed** (Michael, Nicola, Carien — each `email_confirmed_at` set ~30 s after signup, i.e. they clicked the link) and **3 unconfirmed**.
 - **Lila** (`lila.ciao@mtn.co.za`) signed up 2026-05-31, has **`email_confirmed_at = null`** and **`last_sign_in_at = null`** — she signed up, never confirmed, and **has never been able to sign in**. That's the confirmation gate working as designed (and a live example of its friction).
 
-**The confirmation round-trip — `app/auth/callback/route.ts`:**
-1. Supabase emails a link to `${origin}/auth/callback?code=…`.
-2. The route exchanges it: `supabase.auth.exchangeCodeForSession(code)`.
-3. Success → `redirect(${origin}${next})` (defaults to `/`).
-4. Failure (or no code) → `redirect(/login?error=auth)`.
+**The confirmation round-trip — `app/auth/callback/route.ts` (hardened 2026-06-25, P3-9):**
+1. Supabase emails a link to `${origin}/auth/callback?…`.
+2. The route establishes a session from whichever flow the link uses: `?code=…` → `exchangeCodeForSession`; `?token_hash=…&type=…` → `verifyOtp`. (Supporting both means branding the email templates can't silently break the flow.)
+3. **Sign-up / email confirmation** → always `redirect(${origin}/auth/confirmed)` — the friendly "You're all set!" page (Cat 3). If the session couldn't be opened here (e.g. link opened on a *different device* than sign-up, so the PKCE verifier cookie is absent) it appends `?signin=1` and the page tells them to sign in — because the email **was** still verified by Supabase. **No more `/login?error=auth` for confirmations.**
+4. **Recovery** (`type=recovery` or `next=/reset-password`) → `redirect(${origin}/reset-password)`, which checks the session itself and shows a clear invalid/expired state if needed.
 
-> ⚠️ **`?error=auth` is silently dropped** (Cat 4 §7) — the login page never reads the query param, so a failed/expired confirmation link looks like a plain login screen with no explanation. Real onboarding paper-cut.
+> ✅ **The silent `?error=auth` paper-cut is gone for the email flows** — sign-ups land on `/auth/confirmed`, recovery on `/reset-password`, both with real copy. (P7-6's *resend-confirmation* sub-item is still open.)
 
-> **Config dependency:** `emailRedirectTo` points at `${location.origin}/auth/callback`, so the app's origin **must be in Supabase Auth's allowed redirect URLs** (and the confirmation email template must use it). Not verifiable from SQL — a deploy-time checklist item.
+> **Config dependency:** `emailRedirectTo` points at `${location.origin}/auth/callback`, so the app's origin **must be in Supabase Auth's allowed redirect URLs** (and the confirmation email template must use `{{ .ConfirmationURL }}`). Not verifiable from SQL — a deploy-time checklist item. Branded templates + the redirect allow-list are documented in [`supabase/email-templates/README.md`](../../supabase/email-templates/README.md).
 
 ---
 
@@ -91,7 +91,7 @@ A forgotten-password recovery flow, deliberately built to **reuse the existing `
 
 - **Login surface:** `app/login/page.tsx` gained a third mode `"reset"` (email-only; password field hidden). The notice is deliberately **non-committal** — *"If that email is registered, a password-reset link is on its way"* — so it doesn't reveal which emails exist.
 - **Reset page:** `app/reset-password/page.tsx` — checks for the recovery session on mount (`getUser()`); shows the new-password form (password + confirm, `minLength 6`) when present, or a *"link invalid or expired → back to sign in"* message when not.
-- **No middleware change.** `/reset-password` is a **protected** route: the user arrives already signed in (the callback set the session), so middleware lets them through. A bad/expired link never reaches it — the callback sends those to `/login?error=auth`, exactly like a failed confirmation (so the silent-`?error=auth` gap, P7-6, applies here too).
+- **No middleware change.** `/reset-password` is a **protected** route: the user arrives already signed in (the callback set the session), so middleware lets them through. As of 2026-06-25 the callback sends **all** recovery links straight to `/reset-password` (not `/login?error=auth`); a bad/expired link arrives without a session, and the page's own `getUser()` check renders the friendly *"link invalid or expired → back to sign in"* state. So recovery no longer hits the silent-`?error=auth` gap.
 - **Config dependency (same as §4):** `${origin}/auth/callback` must be in Supabase Auth's allowed redirect URLs, and the **recovery** email template must point at it. Deploy-checklist item (P7-10).
 
 ---
@@ -156,7 +156,7 @@ What a brand-new lecturer actually experiences today:
 - **No onboarding / help system** — first-run is a bare empty state; no tour, no help button (Phase 1). Biggest UX gap, shared with Cat 3 §10.
 - **No self-serve trial** — new users are blocked until a manual SQL grant (§8). Phase 2.
 - ~~**No password-reset flow**~~ — **BUILT 2026-06-16** (§4b). Login page now has a "Forgot your password?" path; `/reset-password` sets the new password.
-- **Silent `?error=auth`** — failed confirmation links show no message (§4).
+- ~~**Silent `?error=auth`**~~ — **resolved for the email flows 2026-06-25** (§4, P3-9): sign-ups land on `/auth/confirmed`, recovery on `/reset-password`, both with real copy. (Resend-confirmation UI still missing — see below.)
 - **Middleware has no `try/catch`** around `getUser()` — auth outage isn't degraded (§2, Cat 4 §7).
 - **Email-confirmation friction** — Lila is the live proof a user can sign up and get permanently stuck; no resend-confirmation UI exists.
 - **Orphaned anonymous users** — 2 profile-less auth rows (§7).
@@ -191,7 +191,7 @@ What a brand-new lecturer actually experiences today:
 | **P7-3** | 🟠 | **Anonymous sign-ins enabled** *(advisor 0012; + 2 orphaned anon users)* — anyone can create an anonymous session and pass middleware into the app shell. | Disable anonymous sign-in in Supabase Auth (unless intentionally used). |
 | **P7-4** | 🟠 | **Weak password security** — leaked-password protection is **disabled** *(advisor)*, and the only rule is `minLength 6`. | Enable HaveIBeenPwned check; raise minimum length / add strength rules. |
 | **P7-5** | 🔴 | **Middleware no `try/catch`** around `getUser()` → auth outage breaks page loads. (= P4-1) | Wrap + degrade gracefully. |
-| **P7-6** | 🟡 | **Silent confirmation failure** — `?error=auth` never shown (= P4-5); and **no resend-confirmation UI** (Lila is permanently stuck unconfirmed). | Show the error; add a "resend confirmation" action. |
+| **P7-6** | 🟡 | ~~`?error=auth` never shown~~ — **the error-URL half is fixed 2026-06-25** (§4, P3-9): confirmations now land on `/auth/confirmed`, recovery on `/reset-password`, never a bare error URL. **Still open:** no **resend-confirmation UI** (Lila is permanently stuck unconfirmed). | Add a "resend confirmation" action. |
 | **P7-7** | 🟡 | **Orphaned anonymous users** — 2 profile-less `auth.users` rows from Nov 2025 (pre-trigger). | Delete them; decide on anonymous sign-in (P7-3). |
 | **P7-8** | 🟠 | **No account deletion / data-subject flow** — POPIA gives SA users deletion/access rights; there's no path. | Add account deletion + data export (Phase 4). |
 | **P7-9** | 🟡 | **`signOut` errors unhandled** — if it fails, the user thinks they're out but isn't; also no OAuth/social (acceptable, noted). | Handle the sign-out error path. |
@@ -208,7 +208,8 @@ What a brand-new lecturer actually experiences today:
 | `middleware.ts` | Edge auth gate (redirects, public prefixes) |
 | `app/login/page.tsx` | Sign-in / sign-up / **reset** UI + logic |
 | `app/reset-password/page.tsx` | Set-new-password page (recovery session → `updateUser`); see §4b |
-| `app/auth/callback/route.ts` | Email-confirmation / code-exchange handler (reused by the reset flow) |
+| `app/auth/callback/route.ts` | Email-link handler — PKCE + OTP; routes sign-ups → `/auth/confirmed`, recovery → `/reset-password` (P3-9) |
+| `app/auth/confirmed/page.tsx` | Friendly "You're all set!" landing after confirmation (P3-9) |
 | `components/Sidebar.tsx`, `components/SettingsPanel.tsx` | Sign-out entry points |
 | DB: `handle_new_user()` + `on_auth_user_created` | Auto-creates the profile at signup |
 | `auth.users`, `auth.identities` | Supabase-managed identity store |

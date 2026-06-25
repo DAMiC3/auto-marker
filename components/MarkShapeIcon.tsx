@@ -1,15 +1,19 @@
 "use client";
 
-export type MarkShape = "tick" | "half" | "cross" | "circle" | "underline" | "dot";
+import { SHAPE_GEOMETRY, shapeWeight, type MarkShape, type ShapePrimitive } from "@/lib/markShapes";
 
-export const MARK_SHAPES: { key: MarkShape; label: string }[] = [
-  { key: "tick",      label: "Full mark" },
-  { key: "half",      label: "Half mark" },
-  { key: "cross",     label: "Cross" },
-  { key: "circle",    label: "Circle" },
-  { key: "underline", label: "Underline" },
-  { key: "dot",       label: "Dot" },
-];
+// Re-exported so existing importers (SettingsPanel) keep working unchanged.
+export { MARK_SHAPES, type MarkShape } from "@/lib/markShapes";
+
+// SVG canvas: 24×24 viewBox, origin at the centre (12,12). Unit coords are
+// scaled by SCALE and the y-axis is flipped (SVG is y-down, our geometry y-up).
+const VIEW = 24;
+const C = VIEW / 2;
+const SCALE = 10; // keeps the widest shape (underline, ±1) inside the viewBox
+const BASE_STROKE = 2.5;
+
+const px = (ux: number) => C + ux * SCALE;
+const py = (uy: number) => C - uy * SCALE;
 
 interface Props {
   shape: MarkShape;
@@ -17,59 +21,45 @@ interface Props {
   size?: number;
 }
 
-export default function MarkShapeIcon({ shape, color, size = 22 }: Props) {
-  const common = {
-    width: size,
-    height: size,
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: color,
-    strokeWidth: 2.5,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-
-  switch (shape) {
-    case "tick":
+function Primitive({ p, i, color }: { p: ShapePrimitive; i: number; color: string }) {
+  switch (p.kind) {
+    case "line":
       return (
-        <svg {...common}>
-          <path d="M5 13l4 4L19 6" />
-        </svg>
+        <line
+          key={i}
+          x1={px(p.from[0])} y1={py(p.from[1])}
+          x2={px(p.to[0])}   y2={py(p.to[1])}
+          strokeWidth={BASE_STROKE * shapeWeight(p)}
+        />
       );
-    case "half":
-      // A tick + a slash through it — reads as "half a mark"
+    case "ellipse":
       return (
-        <svg {...common}>
-          <path d="M4 14l3.5 3.5L16 7" />
-          <path d="M19 4L9 21" strokeWidth={2} />
-        </svg>
+        <ellipse
+          key={i}
+          cx={px(p.cx)} cy={py(p.cy)}
+          rx={p.rx * SCALE} ry={p.ry * SCALE}
+          strokeWidth={BASE_STROKE * shapeWeight(p)}
+        />
       );
-    case "cross":
-      return (
-        <svg {...common}>
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      );
-    case "circle":
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="7.5" />
-        </svg>
-      );
-    case "underline":
-      return (
-        <svg {...common}>
-          <path d="M5 18h14" />
-          <path d="M8 6v5a4 4 0 008 0V6" strokeWidth={2} />
-        </svg>
-      );
-    case "dot":
-      return (
-        <svg {...common} fill={color}>
-          <circle cx="12" cy="12" r="4.5" stroke="none" />
-        </svg>
-      );
-    default:
-      return null;
+    case "disc":
+      return <circle key={i} cx={px(p.cx)} cy={py(p.cy)} r={p.r * SCALE} fill={color} stroke="none" />;
   }
+}
+
+export default function MarkShapeIcon({ shape, color, size = 22 }: Props) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${VIEW} ${VIEW}`}
+      fill="none"
+      stroke={color}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {(SHAPE_GEOMETRY[shape] ?? []).map((p, i) => (
+        <Primitive key={i} p={p} i={i} color={color} />
+      ))}
+    </svg>
+  );
 }

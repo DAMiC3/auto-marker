@@ -3,6 +3,7 @@
 import { PDFDocument, rgb, StandardFonts, type PDFPage, type RGB } from "pdf-lib";
 import type { MarkType } from "@/components/SettingsPanel";
 import type { PageContent, Annotation } from "@/lib/markingPrompt";
+import { SHAPE_GEOMETRY, shapeWeight, type MarkShape } from "@/lib/markShapes";
 
 export type { PageContent } from "@/lib/markingPrompt";
 
@@ -153,31 +154,31 @@ function hexToRgb(hex: string): RGB {
   return rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
 }
 
+// Stamp a mark shape onto the PDF by walking the shared geometry (lib/markShapes).
+// The on-screen legend icon (components/MarkShapeIcon) renders the SAME geometry,
+// so the two can't drift (P3-4). Unit coords are scaled by `s` and offset to (x,y);
+// the geometry is y-up, matching pdf-lib, so no flip is needed here.
 function drawShape(page: PDFPage, shape: string, x: number, y: number, s: number, color: RGB) {
-  const t = 2;
-  switch (shape) {
-    case "tick":
-      page.drawLine({ start: { x: x - s * 0.5, y }, end: { x: x - s * 0.1, y: y - s * 0.5 }, thickness: t, color });
-      page.drawLine({ start: { x: x - s * 0.1, y: y - s * 0.5 }, end: { x: x + s * 0.6, y: y + s * 0.6 }, thickness: t, color });
-      break;
-    case "half":
-      page.drawLine({ start: { x: x - s * 0.5, y }, end: { x: x - s * 0.1, y: y - s * 0.5 }, thickness: t, color });
-      page.drawLine({ start: { x: x - s * 0.1, y: y - s * 0.5 }, end: { x: x + s * 0.6, y: y + s * 0.6 }, thickness: t, color });
-      page.drawLine({ start: { x: x + s * 0.55, y: y + s * 0.7 }, end: { x: x - s * 0.2, y: y - s * 0.7 }, thickness: 1.5, color });
-      break;
-    case "cross":
-      page.drawLine({ start: { x: x - s * 0.5, y: y + s * 0.5 }, end: { x: x + s * 0.5, y: y - s * 0.5 }, thickness: t, color });
-      page.drawLine({ start: { x: x - s * 0.5, y: y - s * 0.5 }, end: { x: x + s * 0.5, y: y + s * 0.5 }, thickness: t, color });
-      break;
-    case "circle":
-      page.drawEllipse({ x, y, xScale: s * 0.7, yScale: s * 0.7, borderColor: color, borderWidth: t });
-      break;
-    case "underline":
-      page.drawLine({ start: { x: x - s, y: y - s * 0.6 }, end: { x: x + s, y: y - s * 0.6 }, thickness: t, color });
-      break;
-    case "dot":
-      page.drawCircle({ x, y, size: s * 0.35, color });
-      break;
+  const BASE = 2; // base stroke thickness in PDF points
+  const prims = SHAPE_GEOMETRY[shape as MarkShape];
+  if (!prims) return;
+  for (const p of prims) {
+    if (p.kind === "line") {
+      page.drawLine({
+        start: { x: x + p.from[0] * s, y: y + p.from[1] * s },
+        end:   { x: x + p.to[0] * s,   y: y + p.to[1] * s },
+        thickness: BASE * shapeWeight(p),
+        color,
+      });
+    } else if (p.kind === "ellipse") {
+      page.drawEllipse({
+        x: x + p.cx * s, y: y + p.cy * s,
+        xScale: p.rx * s, yScale: p.ry * s,
+        borderColor: color, borderWidth: BASE * shapeWeight(p),
+      });
+    } else if (p.kind === "disc") {
+      page.drawCircle({ x: x + p.cx * s, y: y + p.cy * s, size: p.r * s, color });
+    }
   }
 }
 
