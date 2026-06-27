@@ -41,7 +41,15 @@ export async function middleware(req: NextRequest) {
     },
   });
 
-  const { data: { user } } = await supabase.auth.getUser();
+  // P4-1: a Supabase auth outage must not throw and break page loads broadly.
+  // Treat a failed lookup as "no user" (fail closed) so protected pages route to
+  // /login (itself public, so it stays reachable and there's no redirect loop).
+  let user = null;
+  try {
+    ({ data: { user } } = await supabase.auth.getUser());
+  } catch (err) {
+    console.error("Middleware getUser failed (auth outage?):", err);
+  }
   const isPublic = PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
 
   // Not signed in and trying to reach a protected page → login

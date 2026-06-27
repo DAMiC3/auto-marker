@@ -63,7 +63,7 @@ Three patterns recur across the codebase:
 - **`handleAddMemo`** → `try/catch` → `setError`. **`listMemos` / `loadSavedRoot`** → silent `.catch(() => {})`.
 
 ### 3.5 Auth & middleware
-- **`middleware.ts`** — if Supabase env is missing it **doesn't gate** (fail open). Otherwise it calls `supabase.auth.getUser()` and redirects. **There is no `try/catch` around `getUser()`** → a Supabase *auth* outage could throw and break page loads broadly. (§7 — biggest resilience gap.)
+- **`middleware.ts`** — if Supabase env is missing it **doesn't gate** (fail open). Otherwise it calls `supabase.auth.getUser()` and redirects. **`getUser()` is now wrapped in `try/catch`** (P4-1, 2026-06-27): a thrown lookup is logged and treated as no-user (fail closed), so an auth outage routes protected pages to `/login` rather than breaking the page load.
 - **`app/auth/callback/route.ts`** — exchanges the code; on success redirects to `next`, on failure redirects to `/login?error=auth`. ⚠️ **`?error=auth` is never displayed** — the login page doesn't read it. Silent failure (§7).
 - **`lib/supabase/server.ts`** — `setAll` is `try/catch`-guarded (Server Component cookie writes are safely ignored).
 
@@ -87,7 +87,7 @@ The meaty part. **Trigger → current behaviour → gap → planned.**
 | **Browser OOM on large PDF** | Canvas render throws → same error path | No chunking; whole run fails | Phase 3: page-at-a-time processing |
 | **Supabase down (pre-check)** | ✅ Both routes **fail CLOSED** via `checkAllowance()` → `verification_failed` 503, nothing marked, ops paged (P1-2, 2026-06-15) | Consistent; availability traded for no free marking | Resolved |
 | **Supabase down (recordUsage)** | 3 retries → park in D1 dead-letter buffer → `notifyOps` → returns false; auto-drains on recovery (Problem 8) | Mark delivered but usage **not lost** — replayed later | Resolved |
-| **Supabase auth down (middleware)** | No `try/catch` → may throw → broad page-load failures | No graceful degradation here | §7 — wrap in try/catch |
+| **Supabase auth down (middleware)** | ✅ `try/catch` around `getUser()` → logged, treated as no-user (fail closed) → protected pages route to `/login`, no page-load crash (P4-1, 2026-06-27) | Authenticated users get bounced to login during an outage (acceptable degradation) | Resolved |
 | **Mid-batch allowance run-out** | Pre-flight estimate blocks an over-budget batch *before* submit; but a batch already in flight isn't stopped per-paper | No hard mid-run stop (estimate only) | Phase 4: partial-completion enforcement |
 | **Batch poll > 20 min** | `pollBatch` throws "taking longer than expected — may still finish" | Result may be lost from the client's view | Phase 1/2: server-side batch tracking |
 | **User closes tab mid-batch** | Poll loop dies; Anthropic batch still completes server-side but is **never retrieved/stamped** → work lost | No resumable jobs | Phase 1/2: server-side batch state + email on completion |
@@ -126,7 +126,7 @@ This is why local dev works without secrets — but it also means a **production
 1. ~~**Pre-check asymmetry**~~ — ✅ **RESOLVED (P1-2, 2026-06-15).** Both routes now share the fail-CLOSED `checkAllowance()` gate (Cat 1 §6.3): any verification error blocks marking (`verification_failed` 503) and pages ops; the old instant-route fail-open path is gone.
 2. **Status-code mismatch** — missing key is 503 (POST) vs 400 (batch GET).
 3. **Silent auth-callback failure** — `/login?error=auth` is set but never rendered; a failed email-confirmation looks like a no-op to the user.
-4. **Middleware has no `try/catch`** around `getUser()` — a Supabase auth outage isn't degraded gracefully like the *config* guard is; it can break page loads. **Highest-value hardening target.**
+4. ~~**Middleware has no `try/catch`** around `getUser()`~~ — ✅ **RESOLVED (P4-1, 2026-06-27).** A thrown lookup is now logged and treated as no-user (fail closed), so an auth outage routes protected pages to `/login` instead of breaking page loads.
 5. **`recordUsage` boolean is ignored** — the only signal of unrecorded (free) usage is a console `CRITICAL` line with no automated destination.
 6. **Instant-mode loop abort** — a single bad paper aborts the remaining papers (batch handles this correctly; instant does not).
 
@@ -165,7 +165,7 @@ This is why local dev works without secrets — but it also means a **production
 
 | ID | Sev | Problem | Fix direction |
 |----|-----|---------|---------------|
-| **P4-1** | 🔴 | **Middleware has no `try/catch`** around `getUser()` → a Supabase *auth* outage can throw and break page loads broadly. (= P7-5) | Wrap in try/catch; on failure, fail to `/login` or a maintenance state, not a crash. |
+| ~~**P4-1**~~ | 🟢 | ✅ **FIXED (2026-06-27).** Middleware now wraps `getUser()` in try/catch; a thrown lookup (auth outage) is treated as no-user (fail closed) and logged, so protected pages route to `/login` instead of crashing the page load. (= P7-5) | Done. |
 | ~~**P4-2**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Pre-check policy asymmetry — both routes now share the fail-CLOSED `checkAllowance()` gate (Cat 1 §6.3); verification errors block marking + page ops. (= P1-2) | Done. |
 | **P4-3** | 🟠 | **`recordUsage` boolean ignored** — the only signal of unrecorded (free) usage is a `CRITICAL` console line nothing watches. | Route CRITICAL to email/alerting. |
 | **P4-4** | 🟡 | **Status-code mismatch** — missing key = 503 (POST) vs 400 (batch GET). | Standardise on 503. |
@@ -186,7 +186,7 @@ This is why local dev works without secrets — but it also means a **production
 | `lib/markingPrompt.ts` | `parseMarkResponse` throws on no-JSON |
 | `lib/markPaper.ts` | `markInstant` surfaces server errors; `preparePaper` unguarded |
 | `app/page.tsx` | `handleMark` catch + friendly mapping; bounded `pollBatch` |
-| `middleware.ts` | Auth gate; ⚠️ no try/catch around `getUser` |
+| `middleware.ts` | Auth gate; `getUser()` wrapped in try/catch → fail closed to `/login` on auth outage (P4-1) |
 | `app/auth/callback/route.ts` | Code exchange; ⚠️ silent `?error=auth` |
 | `lib/supabase/{server,client,service}.ts` | Config guards = graceful degradation |
 
