@@ -462,11 +462,12 @@ export default function Home() {
       const d = await res.json();
       return { kind: "submitted", batchId: d.batchId, quality: d.quality ?? quality };
     }
-    const d = (await res.json().catch(() => ({}))) as { error?: string; affordable?: number };
+    const d = (await res.json().catch(() => ({}))) as { error?: string; affordable?: number; ref?: string };
     if (res.status === 402 && typeof d.affordable === "number") {
       return { kind: "over", affordable: d.affordable };
     }
-    return { kind: "error", code: typeof d.error === "string" ? d.error : "Batch submission failed" };
+    const msg = typeof d.error === "string" ? d.error : "Batch submission failed";
+    return { kind: "error", code: d.ref ? `${msg} (ref: ${d.ref})` : msg };
   }
 
   // submitChunk with bounded retries on a *transient* failure (C12). Plan/auth gate
@@ -686,7 +687,11 @@ export default function Home() {
       const base = chunkCtx ? "Processing chunk" : "Processing batch";
       setProgress(attempt === 0 ? `${base}…` : `${base}… (${attempt * 5}s)`);
       const res = await fetch(`/api/mark/batch?id=${encodeURIComponent(batchId)}&quality=${quality}`);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Batch retrieval failed");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const msg = body.error ?? "Batch retrieval failed";
+        throw new Error(body.ref ? `${msg} (ref: ${body.ref})` : msg);
+      }
       const data = await res.json();
       if (data.status === "ended") return { results: data.results, recorded: data.recorded !== false };
       await new Promise((r) => setTimeout(r, 5000));

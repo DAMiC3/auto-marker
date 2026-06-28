@@ -3,6 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { isServiceConfigured } from "@/lib/supabase/service";
 import { costZar, type TokenUsage } from "@/lib/cost";
 import { checkAllowance, recordUsage } from "@/lib/usage";
+import { newRequestId } from "@/lib/requestId";
+import { notifyOps } from "@/lib/notify";
 import {
   MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse,
@@ -20,6 +22,7 @@ interface MarkRequest {
 }
 
 export async function POST(req: NextRequest) {
+  const rid = newRequestId();
   try {
     const body = (await req.json()) as MarkRequest;
     const { memoText, subject, strictness, markTypes, pages, quality = "standard" } = body;
@@ -75,7 +78,14 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (err) {
-    console.error("Mark route error:", err);
-    return NextResponse.json({ error: "Marking failed. Check server logs." }, { status: 500 });
+    // P4-6: tag the failure with a ref the user can quote. P4-8: push it to
+    // Bernard & CO so server-side 500s surface in the app, not just the console.
+    console.error(`[${rid}] Mark route error:`, err);
+    const detail = err instanceof Error ? err.message : String(err);
+    await notifyOps(`[${rid}] instant mark failed: ${detail}`);
+    return NextResponse.json(
+      { error: "Marking failed. Check server logs.", ref: rid },
+      { status: 500 },
+    );
   }
 }

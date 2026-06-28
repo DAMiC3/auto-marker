@@ -4,6 +4,9 @@ import { createClient as createUserClient } from "@/lib/supabase/server";
 import { isServiceConfigured } from "@/lib/supabase/service";
 import { costZarBatch, type TokenUsage } from "@/lib/cost";
 import { recordUsage, estimateBatchCostZar, affordableDocCount, checkAllowance, MAX_BATCH_DOCS, type PaperPageSummary } from "@/lib/usage";
+import { newRequestId } from "@/lib/requestId";
+import { notifyOps } from "@/lib/notify";
+import { withTimeout } from "@/lib/withTimeout";
 import {
   MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse, type MarkResponse,
@@ -29,7 +32,8 @@ async function getUserId(): Promise<string | null> {
   if (!isServiceConfigured()) return null;
   try {
     const sb = await createUserClient();
-    const { data: { user } } = await sb.auth.getUser();
+    // P4-7: bound the auth call so a hung Supabase doesn't stall recording.
+    const { data: { user } } = await withTimeout(sb.auth.getUser(), 8000, "batch getUserId");
     return user?.id ?? null;
   } catch {
     return null;
@@ -38,6 +42,7 @@ async function getUserId(): Promise<string | null> {
 
 // ── Submit a batch ─────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
+  const rid = newRequestId();
   try {
     const body = (await req.json()) as BatchRequest;
     const { memoText, subject, strictness, markTypes, papers, quality = "standard" } = body;
@@ -114,19 +119,26 @@ export async function POST(req: NextRequest) {
     const batch = await client.messages.batches.create({ requests });
     return NextResponse.json({ status: "submitted", batchId: batch.id, quality });
   } catch (err) {
-    console.error("Batch submit error:", err);
-    return NextResponse.json({ error: "Batch submission failed." }, { status: 500 });
+    console.error(`[${rid}] Batch submit error:`, err);
+    const detail = err instanceof Error ? err.message : String(err);
+    await notifyOps(`[${rid}] batch submit failed: ${detail}`);
+    return NextResponse.json({ error: "Batch submission failed.", ref: rid }, { status: 500 });
   }
 }
 
 // ── Poll / retrieve a batch ──────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
+  const rid = newRequestId();
   try {
     const id      = req.nextUrl.searchParams.get("id");
     const quality = (req.nextUrl.searchParams.get("quality") ?? "standard") as "standard" | "high";
     if (!id) return NextResponse.json({ error: "Missing batch id." }, { status: 400 });
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json({ error: "No API key." }, { status: 400 });
+      // P4-4: server misconfig, not bad input — match the POST routes (503, not 400).
+      return NextResponse.json(
+        { error: "AI marking isn’t configured (missing API key)." },
+        { status: 503 },
+      );
     }
 
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -174,7 +186,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ status: "ended", results, recorded });
   } catch (err) {
-    console.error("Batch poll error:", err);
-    return NextResponse.json({ error: "Batch retrieval failed." }, { status: 500 });
+    console.error(`[${rid}] Batch poll error:`, err);
+    const detail = err instanceof Error ? err.message : String(err);
+    await notifyOps(`[${rid}] batch poll failed: ${detail}`);
+    return NextResponse.json({ error: "Batch retrieval failed.", ref: rid }, { status: 500 });
   }
 }

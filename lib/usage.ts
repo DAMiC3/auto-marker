@@ -8,6 +8,12 @@ import { BATCH_RATES, USD_TO_ZAR } from "@/lib/cost";
 import { blockReason, type AllowanceState } from "@/lib/allowance";
 import { enqueuePendingUsage, drainPendingUsage } from "@/lib/pendingUsage";
 import { notifyOps } from "@/lib/notify";
+import { withTimeout } from "@/lib/withTimeout";
+
+// P4-7: cap on any single Supabase round-trip. A hung call rejects after this
+// instead of riding to the 60s Worker wall; the surrounding try/catch then fails
+// closed fast. Generous enough that a healthy call never trips it.
+const DB_TIMEOUT_MS = 8000;
 
 // Re-export so existing imports of AllowanceProfile keep working; the canonical
 // shape now lives in the client-safe lib/allowance.ts.
@@ -117,7 +123,7 @@ export async function checkAllowance(): Promise<AllowanceCheck> {
   let userId: string | null;
   try {
     const sb = await createUserClient();
-    const { data: { user } } = await sb.auth.getUser();
+    const { data: { user } } = await withTimeout(sb.auth.getUser(), DB_TIMEOUT_MS, "auth getUser");
     userId = user?.id ?? null;
   } catch (e) {
     await notifyOps(`Marking blocked: auth lookup failed during allowance check — ${errMsg(e)}`);
@@ -136,11 +142,15 @@ export async function checkAllowance(): Promise<AllowanceCheck> {
   let profile: AllowanceProfile | null;
   try {
     const svc = createServiceClient();
-    const { data, error } = await svc
-      .from("profiles")
-      .select("plan, allowance_cap_zar, used_zar, period_end")
-      .eq("id", userId)
-      .single();
+    const { data, error } = await withTimeout(
+      svc
+        .from("profiles")
+        .select("plan, allowance_cap_zar, used_zar, period_end")
+        .eq("id", userId)
+        .single(),
+      DB_TIMEOUT_MS,
+      "profiles read",
+    );
     if (error) throw new Error(error.message);
     profile = data;
   } catch (e) {
@@ -172,13 +182,17 @@ export async function recordUsage(
   const svc = createServiceClient();
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const { error } = await svc.rpc("add_usage", {
-        p_user: userId,
-        p_cost: costZar,
-        p_papers: papers,
-        p_tier: tier,
-        p_file: null,
-      });
+      const { error } = await withTimeout(
+        svc.rpc("add_usage", {
+          p_user: userId,
+          p_cost: costZar,
+          p_papers: papers,
+          p_tier: tier,
+          p_file: null,
+        }),
+        DB_TIMEOUT_MS,
+        "add_usage",
+      );
       if (!error) {
         // Supabase is healthy → opportunistically flush anything parked during a
         // previous outage. No-op when the buffer is empty.

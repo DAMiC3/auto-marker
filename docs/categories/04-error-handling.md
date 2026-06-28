@@ -124,10 +124,10 @@ This is why local dev works without secrets — but it also means a **production
 ## 7. Known inconsistencies & bugs (error-handling specific)
 
 1. ~~**Pre-check asymmetry**~~ — ✅ **RESOLVED (P1-2, 2026-06-15).** Both routes now share the fail-CLOSED `checkAllowance()` gate (Cat 1 §6.3): any verification error blocks marking (`verification_failed` 503) and pages ops; the old instant-route fail-open path is gone.
-2. **Status-code mismatch** — missing key is 503 (POST) vs 400 (batch GET).
+2. ~~**Status-code mismatch**~~ — ✅ **RESOLVED (P4-4, 2026-06-27).** Missing key is now 503 in the batch GET route too, matching both POST routes.
 3. **Silent auth-callback failure** — `/login?error=auth` is set but never rendered; a failed email-confirmation looks like a no-op to the user.
 4. ~~**Middleware has no `try/catch`** around `getUser()`~~ — ✅ **RESOLVED (P4-1, 2026-06-27).** A thrown lookup is now logged and treated as no-user (fail closed), so an auth outage routes protected pages to `/login` instead of breaking page loads.
-5. **`recordUsage` boolean is ignored** — the only signal of unrecorded (free) usage is a console `CRITICAL` line with no automated destination.
+5. ~~**`recordUsage` boolean is ignored**~~ — ✅ **RESOLVED (P4-3, 2026-06-27).** A failed write retries → parks in the D1 dead-letter buffer → replays on the next good write → **and** pages ops via `notifyOps` (live: `OPS_ALERT_WEBHOOK_URL` is set). The batch route already used the boolean to stop its chunk loop; instant discards it but self-heals via the buffer.
 6. **Instant-mode loop abort** — a single bad paper aborts the remaining papers (batch handles this correctly; instant does not).
 
 ---
@@ -136,9 +136,9 @@ This is why local dev works without secrets — but it also means a **production
 
 ### 8.1 Current state (thin)
 - **Logging:** `console.error` / `console.log` only, scattered across routes and `recordUsage`. **Cloudflare Workers observability is enabled** (`observability.enabled: true` in `wrangler.jsonc` — Cat 6 §6), so logs surface in the dashboard live tail **and** are retained there. But they are **not externally aggregated, searchable across time, or alerted** — no Sentry, no Logpush sink, no thresholds.
-- **The closest thing to an alert** is `recordUsage`'s `CRITICAL: usage NOT recorded…` line — but nothing watches for it.
-- **No** exception tracking (Sentry), **no** Logpush, **no** uptime/health monitoring, **no** admin dashboard, **no** metrics (error rate, latency, active users, daily spend).
-- **Consequence:** today you find out about failures from a customer, not a dashboard.
+- **Active alerting now exists** via `notifyOps` → `OPS_ALERT_WEBHOOK_URL` (the ntfy **"Bernard & CO"** app, secret confirmed set 2026-06-27): it pushes (a) usage-write failures, (b) allowance-verification failures, (c) client-reported errors (`/api/report-error`), and (d) **route 500s** from the instant + batch routes, each tagged with a correlation `rid` (P4-6/P4-8, 2026-06-27). This is real push-to-phone alerting, not just a console line.
+- **Still missing:** no exception tracking (Sentry), **no** Logpush sink (searchable history), **no** uptime/health monitoring, **no** admin dashboard, **no** metrics (error rate, latency, active users, daily spend), **no** cron drain of the D1 dead-letter buffer.
+- **Consequence:** you now get *pinged* when a request fails, but you still can't *browse* failures over time or see aggregate health — that's the remaining P4-8 work.
 
 ### 8.2 Planned (expansion plan Phases 2 & 4)
 - **Sentry** (free tier) for exception tracking in the Next.js app.
@@ -167,12 +167,12 @@ This is why local dev works without secrets — but it also means a **production
 |----|-----|---------|---------------|
 | ~~**P4-1**~~ | 🟢 | ✅ **FIXED (2026-06-27).** Middleware now wraps `getUser()` in try/catch; a thrown lookup (auth outage) is treated as no-user (fail closed) and logged, so protected pages route to `/login` instead of crashing the page load. (= P7-5) | Done. |
 | ~~**P4-2**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Pre-check policy asymmetry — both routes now share the fail-CLOSED `checkAllowance()` gate (Cat 1 §6.3); verification errors block marking + page ops. (= P1-2) | Done. |
-| **P4-3** | 🟠 | **`recordUsage` boolean ignored** — the only signal of unrecorded (free) usage is a `CRITICAL` console line nothing watches. | Route CRITICAL to email/alerting. |
-| **P4-4** | 🟡 | **Status-code mismatch** — missing key = 503 (POST) vs 400 (batch GET). | Standardise on 503. |
+| ~~**P4-3**~~ | 🟢 | ✅ **RESOLVED (2026-06-27).** Stale row — predated the dead-letter system. A failed `recordUsage` already retries 3× → parks durably in D1 → replays on the next good write → **and pages ops via `notifyOps`** (`OPS_ALERT_WEBHOOK_URL` is set → Bernard & CO). Usage is deferred, not lost, and the failure is alerted. Residual nice-to-have: a cron drain (today the replay is opportunistic) — tracked under P4-8. | Done (alerting live). |
+| ~~**P4-4**~~ | 🟢 | ✅ **FIXED (2026-06-27).** Missing key now returns **503** in the batch GET route too (was 400), matching both POST routes. | Done. |
 | **P4-5** | 🟡 | **Silent `?error=auth`** — auth callback sets it, login page never displays it. (= P7-6) | Read + render the param on the login page. |
-| **P4-6** | 🟡 | **No correlation id** on 500s → can't trace which user/paper failed. | Add a request id to logs + response. |
-| **P4-7** | 🟡 | **No timeout on Supabase calls** → a hung query rides to the 60 s Worker wall. | Add explicit client-side timeouts. |
-| **P4-8** | 🟠 | **Observability gap** — CF dashboard logs only; no Sentry, no Logpush sink, no alerting, no admin dashboard. | Phase 2/4: Sentry + Logpush + protected admin page. |
+| ~~**P4-6**~~ | 🟢 | ✅ **FIXED (2026-06-27).** Each route generates a short `rid` (`lib/requestId.ts`); it's logged on the 500 line **and** returned as `ref` in the error body, surfaced to the user as `(ref: …)` so they can quote it. | Done. |
+| ~~**P4-7**~~ | 🟢 | ✅ **FIXED (2026-06-27).** `lib/withTimeout.ts` caps every Supabase round-trip at 8 s (auth `getUser`, profile read, `add_usage`, middleware + batch auth). A hung call now fails fast into the existing fail-closed paths instead of riding to the 60 s wall. | Done. |
+| **P4-8** | 🟠 | **Observability — wire server errors to Bernard & CO.** `notifyOps` (→ `OPS_ALERT_WEBHOOK_URL`, the ntfy "Bernard & CO" app) now also receives the route **500s** (instant + batch POST/GET), tagged with the `rid`. **Still open:** no admin dashboard, no Logpush sink, no cron drain of the D1 dead-letter buffer, no metrics (error rate / latency / daily spend). | Build the admin page + Logpush + dead-letter drain cron (Phase 2/4). |
 
 ---
 
@@ -189,6 +189,9 @@ This is why local dev works without secrets — but it also means a **production
 | `middleware.ts` | Auth gate; `getUser()` wrapped in try/catch → fail closed to `/login` on auth outage (P4-1) |
 | `app/auth/callback/route.ts` | Code exchange; ⚠️ silent `?error=auth` |
 | `lib/supabase/{server,client,service}.ts` | Config guards = graceful degradation |
+| `lib/requestId.ts` | `newRequestId()` — short correlation id in logs + `ref` in 500 bodies (P4-6) |
+| `lib/withTimeout.ts` | `withTimeout()` — 8 s cap on Supabase round-trips so a hang fails fast, not at the 60 s wall (P4-7) |
+| `lib/notify.ts` | `notifyOps()` → `OPS_ALERT_WEBHOOK_URL` (Bernard & CO); now also receives route 500s (P4-8) |
 
 ## 11. Cross-references
 - The allowance pre-check / `recordUsage` semantics → **Category 1** (§6, §7)

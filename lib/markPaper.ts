@@ -282,7 +282,12 @@ export async function markInstant(
       markTypes: markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
     }),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Marking failed");
+  if (!res.ok) {
+    // P4-6: surface the server's correlation id so the user can quote it in a report.
+    const body = await res.json().catch(() => ({}));
+    const msg = body.error ?? "Marking failed";
+    throw new Error(body.ref ? `${msg} (ref: ${body.ref})` : msg);
+  }
 
   const data  = await res.json();
   const bytes = await stampPaper(original, data.annotations ?? [], markTypes, data.total ?? 0, data.available ?? 0, data.summary ?? "");
