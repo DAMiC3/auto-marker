@@ -6,7 +6,7 @@ import { checkAllowance, recordUsage } from "@/lib/usage";
 import { newRequestId } from "@/lib/requestId";
 import { notifyOps } from "@/lib/notify";
 import {
-  MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
+  MODELS, MAX_OUTPUT_TOKENS, MAX_RETRIES, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse,
 } from "@/lib/markingPrompt";
 
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: MAX_RETRIES });
     const model  = MODELS[quality] ?? MODELS.standard;
 
     // ── Metering pre-check (fail-CLOSED; see lib/usage.checkAllowance) ────────

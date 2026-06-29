@@ -18,6 +18,13 @@ export type Quality = keyof typeof MODELS;
 // (sonnet-4-6 → 64k, opus-4-7 → 128k) support far more if ever needed.
 export const MAX_OUTPUT_TOKENS = 16000;
 
+// P5-4: explicit retry budget for the Anthropic client. The SDK retries 429s,
+// 408/409/5xx and connection errors with exponential backoff + jitter; without
+// setting this we silently rely on the SDK default (2). 4 gives a rate-limit
+// storm more room to clear before surfacing a raw 500 to the user. Marking calls
+// are idempotent (no state written before the response), so retrying is safe.
+export const MAX_RETRIES = 4;
+
 // A page is either extracted text (cheap) or a fallback image (for scans/diagrams).
 export type PageContent =
   | { kind: "text"; text: string }
@@ -45,6 +52,21 @@ export interface MarkResponse {
   summary: string;
 }
 
+// P5-5: the UI slider stays 1–10, but a bare "{n}/10" is too subjective to mark
+// consistently. Resolve it to one of three calibrated bands. The throughline in
+// every band: the slider changes how much benefit-of-the-doubt an answer's WORDING
+// and completeness earn — it is NEVER licence to award marks the memo does not
+// support (lenient) or to invent faults and dock memo-earned marks (strict).
+export function strictnessGuidance(strictness: number): string {
+  if (strictness <= 4) {
+    return `Marking stance: LENIENT. Give the student the benefit of the doubt on expression: award the mark when the answer clearly conveys the memo's required point, even if it is worded imprecisely, uses equivalent terminology, or is briefly stated. Be generous with partial marks for each memo point that is present in substance. Leniency applies ONLY to how an answer is phrased — it is never a reason to award marks the memo does not support. Do not award any marks for content that is absent, off-topic, or simply wrong, no matter how lenient the stance.`;
+  }
+  if (strictness <= 7) {
+    return `Marking stance: MODERATE. Apply a balanced standard. Award the mark when the answer contains the memo's required point with reasonable accuracy and completeness, in the student's own words. Award partial marks in proportion to how many of the memo's required points are genuinely present. Do not treat vague, incomplete, or only partly-correct answers as fully correct, and never award marks for content the memo does not support.`;
+  }
+  return `Marking stance: STRICT. Hold a high bar for correctness. Award the mark only when the answer matches the memo accurately and completely, using the correct terms and covering all required elements. Withhold marks where the answer is vague, incomplete, partly correct, or only gestures at the right idea. Being strict means demanding precision — it does NOT mean inventing faults or deducting marks the memo would award; an answer that fully and correctly meets the memo still earns full marks.`;
+}
+
 export function buildSystem(
   strictness: number,
   markTypes: MarkTypeInput[],
@@ -59,7 +81,7 @@ HOW TO MARK
 - The memo is the only source of truth. Compare every answer to the memo and nothing else.
 - Reward ACCURACY and CORRECTNESS, never writing style. A short, plainly written answer that contains the correct points earns full marks. A long, eloquent answer that misses the required points does NOT.
 - Award partial marks for each correct point the memo allocates that is present in the answer.
-- Apply strictness ${strictness}/10 (1 = lenient, generous partial credit; 10 = strict).
+- ${strictnessGuidance(strictness)}
 
 DO NOT HALLUCINATE
 - Never invent facts, marks, questions, or content not present in the student's answer or the memo.
@@ -131,10 +153,15 @@ export function parseMarkResponse(rawText: string): MarkResponse {
     annotations?: { p?: number; y?: number; s?: string; m?: string; c?: string }[];
   };
   // Expand the short keys (p,y,s,m,c) back to the full annotation shape.
+  const total = raw.total ?? 0;
+  const available = raw.available ?? 0;
   return {
-    total: raw.total ?? 0,
-    available: raw.available ?? 0,
-    percentage: raw.percentage ?? 0,
+    total,
+    available,
+    // P5-2: compute the percentage from the marks rather than trusting the
+    // model's self-reported value, which can be internally inconsistent with
+    // total/available. Guard against divide-by-zero (no available marks → 0%).
+    percentage: available > 0 ? Math.round((total / available) * 100) : 0,
     summary: raw.summary ?? "",
     annotations: (raw.annotations ?? []).map((a) => ({
       page: a.p ?? 1,

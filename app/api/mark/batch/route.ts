@@ -8,7 +8,7 @@ import { newRequestId } from "@/lib/requestId";
 import { notifyOps } from "@/lib/notify";
 import { withTimeout } from "@/lib/withTimeout";
 import {
-  MODELS, MAX_OUTPUT_TOKENS, type PageContent, type MarkTypeInput,
+  MODELS, MAX_OUTPUT_TOKENS, MAX_RETRIES, type PageContent, type MarkTypeInput,
   buildSystem, buildContent, parseMarkResponse, type MarkResponse,
 } from "@/lib/markingPrompt";
 
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: MAX_RETRIES });
     const model  = MODELS[quality] ?? MODELS.standard;
 
     const requests = papers.map((p) => ({
@@ -141,7 +141,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: MAX_RETRIES });
     const batch  = await client.messages.batches.retrieve(id);
 
     if (batch.processing_status !== "ended") {
