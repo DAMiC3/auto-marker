@@ -24,7 +24,7 @@ Every category doc ends with a **Problems / To-Fix Backlog** table (severity-tag
 | ID | Category | Problem |
 |----|----------|---------|
 | ~~P1-1 / P6-1~~ | ✅ Payments / DB | ~~Duplicate revenue triggers → double-logs first paid customer~~ — **FIXED 2026-06-15** (dropped `log_plan_revenue`) |
-| P6-2 | DB | Trigger functions publicly callable via REST (`anon`/`authenticated`) — Supabase advisor |
+| ~~P6-2~~ | ✅ DB | ~~Trigger functions publicly callable via REST (`anon`/`authenticated`) — Supabase advisor~~ — **FIXED 2026-06-29** (revoked EXECUTE from `public`/`anon`/`authenticated` on `log_revenue_event`) |
 | ~~P2-1~~ | ✅ Marking | ~~Re-running a batch silently overwrites marked files (original already deleted) → data loss~~ — **FIXED 2026-06-15** (empty-destination guard + versioned writes + keep-originals setting) |
 | ~~P3-1~~ | ✅ UI | ~~Mark types can be deleted to zero → prompt has no shapes to mark with~~ — **FIXED 2026-06-15** (≥1 guard in `removeMark` + disabled remove button on last type) |
 | ~~P4-1 / P7-5~~ | ✅ Errors / Auth | ~~Middleware has no try/catch around `getUser()` → auth outage breaks all pages~~ — **FIXED 2026-06-27** (wrapped + fail closed to `/login`) |

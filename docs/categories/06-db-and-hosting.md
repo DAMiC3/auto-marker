@@ -53,8 +53,10 @@ It is populated **automatically by triggers** on `profiles` (§5.2) whenever som
 ---
 
 ## 4. RLS model
-- **`profiles`** — one policy `profiles_select_own`: `SELECT` for `authenticated` where `auth.uid() = id`.
-- **`usage_events`** — one policy `usage_select_own`: `SELECT` for `authenticated` where `auth.uid() = user_id`.
+- **`profiles`** — one policy `profiles_select_own`: `SELECT` for `authenticated` where `(select auth.uid()) = id`.
+- **`usage_events`** — one policy `usage_select_own`: `SELECT` for `authenticated` where `(select auth.uid()) = user_id`.
+
+  > Both policies wrap `auth.uid()` in a scalar subselect (initplan) so it's evaluated once per query, not once per row — P6-5 fix, 2026-06-29.
 - **`revenue_events`** — **RLS enabled, zero policies** → no `authenticated` user can read it at all. Only the **service-role key** (which bypasses RLS) can. Correct for sensitive revenue data.
 - **All writes** to every table go through `SECURITY DEFINER` functions called with the **service-role key** server-side. The client has **no write path** to any table; it can only read its own `profiles`/`usage_events` rows. This is the security spine of the metering system.
 
@@ -72,8 +74,8 @@ It is populated **automatically by triggers** on `profiles` (§5.2) whenever som
 ### 5.2 Revenue logging (single-trigger as of 2026-06-15)
 | Object | What it does |
 |--------|--------------|
-| `plan_price(p_plan)` | `IMMUTABLE` helper: standard→1000, pro→3000, else 0. |
-| `log_revenue_event()` | **The one revenue logger.** Trigger fn: on paid-plan INSERT/UPDATE, inserts a `revenue_events` row using `plan_price()`. **Excludes the owner** (`bernardmanne3@gmail.com`). Classifies `new`/`renewal`/`change`. Sets `search_path`. |
+| `plan_price(p_plan)` | `IMMUTABLE` helper: standard→1000, pro→3000, else 0. `search_path` pinned to `public` (P6-3 fix, 2026-06-29). |
+| `log_revenue_event()` | **The one revenue logger.** Trigger fn: on paid-plan INSERT/UPDATE, inserts a `revenue_events` row using `plan_price()`. **Excludes the owner** (`bernardmanne3@gmail.com`). Classifies `new`/`renewal`/`change`. Sets `search_path`. **`EXECUTE` revoked from `public`/`anon`/`authenticated`** so it can't be called directly via REST RPC — only the trigger (owner context) and service-role invoke it (P6-2 fix, 2026-06-29). |
 
 **Triggers on `profiles`:**
 - `trg_log_revenue_insert` → `log_revenue_event` (INSERT, paid plans)
@@ -172,11 +174,11 @@ mv open-next.config.ts.bak open-next.config.ts
 | ID | Sev | Problem | Fix direction |
 |----|-----|---------|---------------|
 | ~~**P6-1**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Duplicate revenue triggers — `log_plan_revenue` + trigger dropped (migration `drop_duplicate_revenue_trigger`); only `log_revenue_event` remains. (= P1-1) | Done. |
-| **P6-2** | 🔴 | **Trigger functions are publicly callable** *(advisor 0028/0029)* — `log_revenue_event()` is `SECURITY DEFINER` and **executable by `anon` and `authenticated`** via `/rest/v1/rpc/…`. Trigger functions should never be directly invocable. (`log_plan_revenue` is gone, so one fewer.) | `REVOKE EXECUTE … FROM anon, authenticated` on `log_revenue_event` (and any other trigger fns). |
-| **P6-3** | 🟠 | **Mutable `search_path`** *(advisor 0011)* — now only on `plan_price` (`log_plan_revenue` dropped 2026-06-15 cleared the other). | `ALTER FUNCTION public.plan_price SET search_path = public`. |
-| **P6-4** | 🟠 | **GraphQL schema exposure** *(advisor 0027)* — `profiles` and `usage_events` are discoverable by any `authenticated` user via the auto GraphQL API (RLS still limits *rows*, but the schema is visible). | Revoke `SELECT` from `authenticated` if discoverability is unwanted, or accept and document. |
-| **P6-5** | 🟠 | **RLS init-plan perf** *(advisor 0003)* — both policies call `auth.uid()` per row instead of `(select auth.uid())` → slow at scale. | Rewrite policies to `(select auth.uid())`. Easy win. |
-| **P6-6** | 🟡 | **Unindexed FK** *(advisor 0001)* — `revenue_events.user_id` has no covering index. | `create index on revenue_events(user_id)`. |
+| ~~**P6-2**~~ | 🟢 | ✅ **FIXED (2026-06-29).** Trigger fn `log_revenue_event()` was `SECURITY DEFINER` and executable by `anon`/`authenticated` via `/rest/v1/rpc/…` *(advisor 0028/0029)*. Revoked `EXECUTE` from `public, anon, authenticated` (migrations `cat6_advisor_cluster_p6_2_3_5_6` + `cat6_p6_2_revoke_public_execute`). ⚠️ **Lesson:** revoking from `anon`/`authenticated` alone is NOT enough — Postgres grants `EXECUTE` to pseudo-role `PUBLIC` by default and those roles inherit it; you must revoke from `PUBLIC` too. ACL is now `{postgres,service_role}` only; advisor cleared. | Done. |
+| ~~**P6-3**~~ | 🟢 | ✅ **FIXED (2026-06-29).** Pinned `plan_price` search_path *(advisor 0011)* — `ALTER FUNCTION public.plan_price(text) SET search_path = public` (migration `cat6_advisor_cluster_p6_2_3_5_6`). Advisor cleared. | Done. |
+| **P6-4** | 🟠 | **GraphQL schema exposure** *(advisor 0027/0026)* — `profiles`, `usage_events` and `trial_claims` are discoverable by any `authenticated` user via the auto GraphQL API; `trial_claims` is also exposed to `anon` *(0026)*. RLS still limits *rows*, but the schema is visible. **Needs a decision (revoke vs accept).** | Revoke `SELECT` from `authenticated` (and `anon` for `trial_claims`) if discoverability is unwanted, or accept and document. |
+| ~~**P6-5**~~ | 🟢 | ✅ **FIXED (2026-06-29).** Rewrote both RLS policies to `(select auth.uid())` *(advisor 0003)* via `ALTER POLICY` (migration `cat6_advisor_cluster_p6_2_3_5_6`). Advisor cleared. | Done. |
+| ~~**P6-6**~~ | 🟢 | ✅ **FIXED (2026-06-29).** Added `revenue_events_user_id_idx` covering the FK *(advisor 0001)* (migration `cat6_advisor_cluster_p6_2_3_5_6`). Advisor 0001 cleared; now shows as INFO "unused index" — expected on a 0-row table, it'll be used once revenue rows exist. | Done. |
 | **P6-7** | 🟡 | **`revenue_events` RLS-enabled, no policy** *(advisor 0008, INFO)* — intentional (service-role only), but flagged. | Acknowledge/document; no action needed. |
 | **P6-8** | 🟠 | **Schema not in version control** — no migration files in the repo; the DB drifts independently of git, no reproducible setup. | Export migrations into the repo. |
 | **P6-9** | 🟠 | **No staging/prod separation** — migrations (incl. via MCP) hit prod directly; a bad change has no buffer. | Add a staging project or branch DB. |
