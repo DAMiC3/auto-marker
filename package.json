@@ -14,7 +14,6 @@
     "@anthropic-ai/sdk": "^0.98.0",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.2",
-    "mammoth": "^1.12.0",
     "next": "15.5.18",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.7.284",
