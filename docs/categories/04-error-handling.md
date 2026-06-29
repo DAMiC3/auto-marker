@@ -5,7 +5,7 @@
 
 How the system behaves when things go wrong, and how we **see** that they went wrong. **Observability folds in here** — logging, exception tracking, dashboards, alerting. You can't handle what you can't see, so the two belong together.
 
-This is a *cross-cutting* category: it doesn't own a feature, it owns the failure behaviour of every other category. The honest summary up front: **error handling is decent at the boundaries (clear status codes, retries on usage writes, isolated per-paper batch failures) but observability is essentially absent (console logs only, no alerting, no dashboard).**
+This is a *cross-cutting* category: it doesn't own a feature, it owns the failure behaviour of every other category. The honest summary up front: **error handling is solid at the boundaries (clear+consistent status codes, retries on usage writes, isolated per-paper batch failures, correlation ids) and push alerting now exists (`notifyOps` → Bernard & CO on 500s, usage-write failures, and client errors) — but deeper observability is still thin (no searchable log history, no dashboard, no metrics).**
 
 ---
 
@@ -23,13 +23,13 @@ Three patterns recur across the codebase:
 
 | Code | Meaning | Where it's returned |
 |------|---------|---------------------|
-| **400** | Bad input | no pages (`/api/mark`), no papers (`/api/mark/batch` POST), missing batch `id` or missing key (`batch` GET) |
+| **400** | Bad input | no pages (`/api/mark`), no papers (`/api/mark/batch` POST), missing batch `id` (`batch` GET) |
 | **402** | `allowance_exhausted` | cap hit / period expired / batch pre-flight overspend (both routes) |
 | **500** | Generic server failure | outer `catch` in every route ("Marking failed", "Batch submission failed", "Batch retrieval failed") |
-| **503** | AI not configured | `ANTHROPIC_API_KEY` missing (both **POST** routes) |
-| **redirect** | Auth gate | middleware → `/login`; auth callback failure → `/login?error=auth` |
+| **503** | AI not configured | `ANTHROPIC_API_KEY` missing (**all** routes — both POST **and** the batch GET, P4-4) |
+| **redirect** | Auth gate | middleware → `/login`; auth callback → always a friendly page (`/auth/confirmed` / `/reset-password`), never a bare error URL (P3-9 / P4-5) |
 
-> ⚠️ **Inconsistency:** a missing key is **503** in the POST routes but **400** in the batch **GET** route. Same condition, different code. (§7)
+> ✅ Missing-key handling is now **consistent**: 503 across all routes (was 400 in the batch GET — fixed P4-4, 2026-06-27).
 
 ---
 
@@ -64,7 +64,7 @@ Three patterns recur across the codebase:
 
 ### 3.5 Auth & middleware
 - **`middleware.ts`** — if Supabase env is missing it **doesn't gate** (fail open). Otherwise it calls `supabase.auth.getUser()` and redirects. **`getUser()` is now wrapped in `try/catch`** (P4-1, 2026-06-27): a thrown lookup is logged and treated as no-user (fail closed), so an auth outage routes protected pages to `/login` rather than breaking the page load.
-- **`app/auth/callback/route.ts`** — exchanges the code; on success redirects to `next`, on failure redirects to `/login?error=auth`. ⚠️ **`?error=auth` is never displayed** — the login page doesn't read it. Silent failure (§7).
+- **`app/auth/callback/route.ts`** — establishes the session (PKCE `code` or OTP `token_hash`) then forwards to a **friendly page, never a bare error URL** (P3-9 / P4-5): recovery → `/reset-password` (shows its own invalid/expired state), sign-up/confirmation → `/auth/confirmed` (always celebratory; on a failed exchange it appends `?signin=1` → "Sign in to start marking"). The old silent `?error=auth` redirect is gone.
 - **`lib/supabase/server.ts`** — `setAll` is `try/catch`-guarded (Server Component cookie writes are safely ignored).
 
 ### 3.6 Storage (browser)
@@ -125,7 +125,7 @@ This is why local dev works without secrets — but it also means a **production
 
 1. ~~**Pre-check asymmetry**~~ — ✅ **RESOLVED (P1-2, 2026-06-15).** Both routes now share the fail-CLOSED `checkAllowance()` gate (Cat 1 §6.3): any verification error blocks marking (`verification_failed` 503) and pages ops; the old instant-route fail-open path is gone.
 2. ~~**Status-code mismatch**~~ — ✅ **RESOLVED (P4-4, 2026-06-27).** Missing key is now 503 in the batch GET route too, matching both POST routes.
-3. **Silent auth-callback failure** — `/login?error=auth` is set but never rendered; a failed email-confirmation looks like a no-op to the user.
+3. ~~**Silent auth-callback failure**~~ — ✅ **RESOLVED (P4-5, P3-9).** The callback no longer emits `?error=auth`; it always lands on a friendly page (`/auth/confirmed` or `/reset-password`). The only residual item — a **"resend confirmation" UI** for a user who never clicked the link — is a *new feature*, tracked in Category 7 (P7-6) alongside the P7-1 onboarding work, not here.
 4. ~~**Middleware has no `try/catch`** around `getUser()`~~ — ✅ **RESOLVED (P4-1, 2026-06-27).** A thrown lookup is now logged and treated as no-user (fail closed), so an auth outage routes protected pages to `/login` instead of breaking page loads.
 5. ~~**`recordUsage` boolean is ignored**~~ — ✅ **RESOLVED (P4-3, 2026-06-27).** A failed write retries → parks in the D1 dead-letter buffer → replays on the next good write → **and** pages ops via `notifyOps` (live: `OPS_ALERT_WEBHOOK_URL` is set). The batch route already used the boolean to stop its chunk loop; instant discards it but self-heals via the buffer.
 6. **Instant-mode loop abort** — a single bad paper aborts the remaining papers (batch handles this correctly; instant does not).
@@ -169,7 +169,7 @@ This is why local dev works without secrets — but it also means a **production
 | ~~**P4-2**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Pre-check policy asymmetry — both routes now share the fail-CLOSED `checkAllowance()` gate (Cat 1 §6.3); verification errors block marking + page ops. (= P1-2) | Done. |
 | ~~**P4-3**~~ | 🟢 | ✅ **RESOLVED (2026-06-27).** Stale row — predated the dead-letter system. A failed `recordUsage` already retries 3× → parks durably in D1 → replays on the next good write → **and pages ops via `notifyOps`** (`OPS_ALERT_WEBHOOK_URL` is set → Bernard & CO). Usage is deferred, not lost, and the failure is alerted. Residual nice-to-have: a cron drain (today the replay is opportunistic) — tracked under P4-8. | Done (alerting live). |
 | ~~**P4-4**~~ | 🟢 | ✅ **FIXED (2026-06-27).** Missing key now returns **503** in the batch GET route too (was 400), matching both POST routes. | Done. |
-| **P4-5** | 🟡 | **Silent `?error=auth`** — auth callback sets it, login page never displays it. (= P7-6) | Read + render the param on the login page. |
+| ~~**P4-5**~~ | 🟢 | ✅ **RESOLVED (P3-9).** The auth callback no longer emits `?error=auth` — it always lands on a friendly page (`/auth/confirmed` / `/reset-password`). The residual **"resend confirmation" UI** is a new feature, owned by Category 7 (P7-6), not an error-handling fix. | Done here; resend tracked in Cat 7. |
 | ~~**P4-6**~~ | 🟢 | ✅ **FIXED (2026-06-27).** Each route generates a short `rid` (`lib/requestId.ts`); it's logged on the 500 line **and** returned as `ref` in the error body, surfaced to the user as `(ref: …)` so they can quote it. | Done. |
 | ~~**P4-7**~~ | 🟢 | ✅ **FIXED (2026-06-27).** `lib/withTimeout.ts` caps every Supabase round-trip at 8 s (auth `getUser`, profile read, `add_usage`, middleware + batch auth). A hung call now fails fast into the existing fail-closed paths instead of riding to the 60 s wall. | Done. |
 | **P4-8** | 🟠 | **Observability — wire server errors to Bernard & CO.** `notifyOps` (→ `OPS_ALERT_WEBHOOK_URL`, the ntfy "Bernard & CO" app) now also receives the route **500s** (instant + batch POST/GET), tagged with the `rid`. **Still open:** no admin dashboard, no Logpush sink, no cron drain of the D1 dead-letter buffer, no metrics (error rate / latency / daily spend). | Build the admin page + Logpush + dead-letter drain cron (Phase 2/4). |
@@ -187,7 +187,7 @@ This is why local dev works without secrets — but it also means a **production
 | `lib/markPaper.ts` | `markInstant` surfaces server errors; `preparePaper` unguarded |
 | `app/page.tsx` | `handleMark` catch + friendly mapping; bounded `pollBatch` |
 | `middleware.ts` | Auth gate; `getUser()` wrapped in try/catch → fail closed to `/login` on auth outage (P4-1) |
-| `app/auth/callback/route.ts` | Code exchange; ⚠️ silent `?error=auth` |
+| `app/auth/callback/route.ts` | Code/OTP exchange → friendly landing page, never a bare error URL (P3-9 / P4-5) |
 | `lib/supabase/{server,client,service}.ts` | Config guards = graceful degradation |
 | `lib/requestId.ts` | `newRequestId()` — short correlation id in logs + `ref` in 500 bodies (P4-6) |
 | `lib/withTimeout.ts` | `withTimeout()` — 8 s cap on Supabase round-trips so a hang fails fast, not at the 60 s wall (P4-7) |
