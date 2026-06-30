@@ -114,6 +114,16 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
 
   // Current plan + expiry (read-only — shown so the user knows when they renew)
   const [planInfo, setPlanInfo] = useState<{ plan: string; periodEnd: string | null } | null>(null);
+  const [signingOut, setSigningOut]     = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
+
+  // P7-8 (Advanced → Your data): export + account deletion.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [exporting, setExporting]       = useState(false);
+  const [exportError, setExportError]   = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting]         = useState(false);
+  const [deleteError, setDeleteError]   = useState(false);
 
   // Re-sync when reopened
   useEffect(() => {
@@ -124,6 +134,11 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
       setMarkTypes(initial.markTypes);
       setQuality(initial.markingQuality);
       setKeepOriginals(initial.keepOriginals);
+      // Collapse Advanced and clear any half-open delete confirmation (P7-8).
+      setAdvancedOpen(false);
+      setConfirmDelete(false);
+      setDeleteError(false);
+      setExportError(false);
     }
   }, [open, initial]);
 
@@ -217,9 +232,60 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
   }
 
   async function handleSignOut() {
-    await createClient().auth.signOut();
+    // P7-9: if signOut fails the session may still be live, so don't navigate to
+    // /login as if it succeeded — surface the error and let the user retry.
+    setSignOutError(false);
+    setSigningOut(true);
+    try {
+      const { error } = await createClient().auth.signOut();
+      if (error) throw error;
+    } catch {
+      setSigningOut(false);
+      setSignOutError(true);
+      return;
+    }
     router.push("/login");
     router.refresh();
+  }
+
+  // P7-8: download the bare-minimum data export as a CSV file.
+  async function handleExport() {
+    setExportError(false);
+    setExporting(true);
+    try {
+      const res = await fetch("/api/account/export");
+      if (!res.ok) throw new Error("export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "automark-data-export.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError(true);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // P7-8: permanently delete the account, then sign out into /login.
+  async function handleDeleteAccount() {
+    setDeleteError(false);
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/account/delete", { method: "POST" });
+      if (!res.ok) throw new Error("delete failed");
+      // Account is gone — clear the now-orphaned session and leave the app.
+      await createClient().auth.signOut().catch(() => {});
+      router.push("/login");
+      router.refresh();
+    } catch {
+      setDeleting(false);
+      setDeleteError(true);
+    }
   }
 
   return (
@@ -514,10 +580,99 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
             <h3 className="text-[14px] font-semibold text-slate-800 mb-3">Account</h3>
             <button
               onClick={handleSignOut}
-              className="w-full text-left px-4 py-3 rounded-xl border border-red-200 text-red-600 text-[14px] font-medium hover:bg-red-50 transition-colors"
+              disabled={signingOut}
+              className="w-full text-left px-4 py-3 rounded-xl border border-red-200 text-red-600 text-[14px] font-medium hover:bg-red-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Sign out
+              {signingOut ? "Signing out…" : "Sign out"}
             </button>
+            {signOutError && (
+              <p role="alert" className="mt-2 text-[13px] text-red-600">
+                Couldn’t sign you out — check your connection and try again.
+              </p>
+            )}
+          </section>
+
+          {/* Advanced — low-key; holds account deletion + data export (P7-8). */}
+          <section className="border-t border-slate-100 pt-6">
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((v) => !v)}
+              aria-expanded={advancedOpen}
+              className="flex items-center gap-1.5 text-[13px] font-medium text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              <svg className={`w-3.5 h-3.5 transition-transform ${advancedOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              Advanced
+            </button>
+
+            {advancedOpen && (
+              <div className="mt-4 flex flex-col gap-6">
+                {/* Delete account — with a confirmation step */}
+                <div>
+                  {!confirmDelete ? (
+                    <button
+                      type="button"
+                      onClick={() => { setConfirmDelete(true); setDeleteError(false); }}
+                      className="text-[13px] text-red-600 hover:underline"
+                    >
+                      Delete my account
+                    </button>
+                  ) : (
+                    <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                      <p className="text-[13px] font-semibold text-red-800">Delete your account?</p>
+                      <p className="text-[12.5px] text-red-700 mt-1 leading-relaxed">
+                        This permanently removes your account and your marking history. It can’t be undone,
+                        and your free trial can’t be claimed again.
+                      </p>
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDeleteAccount}
+                          disabled={deleting}
+                          className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[13px] font-semibold transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {deleting ? "Deleting…" : "Yes, delete my account"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDelete(false)}
+                          disabled={deleting}
+                          className="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-700 text-[13px] font-medium hover:bg-slate-50 transition-colors disabled:opacity-60"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {deleteError && (
+                        <p role="alert" className="mt-2 text-[12.5px] text-red-700">
+                          Couldn’t delete your account just now. Please try again in a moment.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Data export — at the bottom of Advanced */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={handleExport}
+                    disabled={exporting}
+                    className="text-[13px] text-slate-500 hover:text-slate-700 hover:underline transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {exporting ? "Preparing…" : "Export my data (CSV)"}
+                  </button>
+                  <p className="text-[12px] text-slate-400 mt-1">
+                    A copy of the basic account information we hold about you.
+                  </p>
+                  {exportError && (
+                    <p role="alert" className="mt-1 text-[12.5px] text-red-600">
+                      Couldn’t prepare your export. Please try again.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
         </div>
 

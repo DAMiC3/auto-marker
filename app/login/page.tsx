@@ -16,6 +16,9 @@ export default function LoginPage() {
   const [error, setError]       = useState("");
   const [notice, setNotice]     = useState("");
   const [loading, setLoading]   = useState(false);
+  // P7-6: offer a "resend confirmation email" action once we know the account
+  // exists but isn't confirmed (failed sign-in, or just-created sign-up).
+  const [canResend, setCanResend] = useState(false);
 
   const configured = isSupabaseConfigured();
 
@@ -24,6 +27,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     setNotice("");
+    setCanResend(false);
 
     if (!configured) {
       setError("Sign-in isn’t configured yet. Add your Supabase keys to continue.");
@@ -54,6 +58,8 @@ export default function LoginPage() {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         setError(authErrorMessage(error.message));
+        // Unconfirmed account → offer to resend the confirmation link (P7-6).
+        if (/not confirmed/i.test(error.message)) setCanResend(true);
         setLoading(false);
         return;
       }
@@ -82,9 +88,33 @@ export default function LoginPage() {
       router.refresh();
     } else {
       setNotice("Account created. Check your email to confirm, then sign in.");
+      setCanResend(true); // didn't arrive? let them resend (P7-6)
       setMode("signin");
       setLoading(false);
     }
+  }
+
+  // P7-6: re-send the sign-up confirmation email. Uses the same redirect target as
+  // sign-up so the link routes through /auth/callback. Email throttles / rate limits
+  // are surfaced via authErrorMessage (e.g. "wait a little while, then try again").
+  async function handleResend() {
+    if (!configured || !email) return;
+    setLoading(true);
+    setError("");
+    setNotice("");
+    const supabase = createClient();
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: `${location.origin}/auth/callback` },
+    });
+    if (error) {
+      setError(authErrorMessage(error.message));
+    } else {
+      setNotice("Confirmation email sent. Check your inbox (and spam) for the verification link.");
+      setCanResend(false);
+    }
+    setLoading(false);
   }
 
   return (
@@ -137,13 +167,29 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete={mode === "signin" ? "current-password" : "new-password"}
                 required
-                minLength={6}
+                // P7-4: new passwords must be ≥8 chars. Sign-in stays at 6 so users who
+                // set a 6-char password before this change can still get in.
+                minLength={mode === "signup" ? 8 : 6}
                 className="w-full bg-white/5 border border-white/10 text-white placeholder-slate-500 rounded-xl px-4 py-3 text-[14px] outline-none focus:border-[var(--accent-500)] focus:ring-1 focus:ring-[var(--accent-500)] transition"
               />
+            )}
+            {mode === "signup" && (
+              <p className="-mt-1 text-[12px] text-slate-500">Use at least 8 characters.</p>
             )}
 
             {error && <p className="text-red-400 text-[13px]">{error}</p>}
             {notice && <p className="text-emerald-400 text-[13px]">{notice}</p>}
+
+            {canResend && (
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={loading || !email}
+                className="text-left text-[13px] text-[var(--accent-400)] hover:opacity-80 underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Didn’t get the email? Resend confirmation link
+              </button>
+            )}
 
             <button
               type="submit"
@@ -158,7 +204,7 @@ export default function LoginPage() {
 
           {mode === "signin" && (
             <button
-              onClick={() => { setMode("reset"); setError(""); setNotice(""); }}
+              onClick={() => { setMode("reset"); setError(""); setNotice(""); setCanResend(false); }}
               className="mt-4 w-full text-center text-[13px] text-slate-400 hover:text-slate-200 transition-colors"
             >
               Forgot your password?
@@ -168,7 +214,7 @@ export default function LoginPage() {
           <button
             onClick={() => {
               setMode(mode === "signin" ? "signup" : "signin");
-              setError(""); setNotice("");
+              setError(""); setNotice(""); setCanResend(false);
             }}
             className="mt-3 w-full text-center text-[13px] text-slate-400 hover:text-slate-200 transition-colors"
           >

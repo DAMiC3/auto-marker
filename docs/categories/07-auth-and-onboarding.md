@@ -46,9 +46,9 @@ Every request (except static assets) passes through the middleware, which enforc
 
 A single dark-themed page with a `signin ⇄ signup` toggle (UI in Cat 3 §7).
 
-- **Fields:** email + password (always); **full name** only on sign-up. Password `minLength={6}`.
+- **Fields:** email + password (always); **full name** only on sign-up. Password `minLength` is **8 on sign-up, 6 on sign-in** (P7-4 — the higher floor applies to new passwords without locking out anyone who set a 6-char one before).
 - **Config guard:** if Supabase isn't configured → "Sign-in isn't configured yet."
-- **Sign-in:** `supabase.auth.signInWithPassword({ email, password })`; on success `router.push("/")` + `refresh()`; on error shows `error.message` verbatim.
+- **Sign-in:** `supabase.auth.signInWithPassword({ email, password })`; on success `router.push("/")` + `refresh()`; on error shows a friendly message. If the error is *email not confirmed*, a **"Resend confirmation link"** action appears (P7-6 — `supabase.auth.resend({ type: 'signup' })`).
 - **Sign-up:** `supabase.auth.signUp({ email, password, options: { data: { full_name }, emailRedirectTo: ${origin}/auth/callback } })`.
   - The `full_name` is stashed in `raw_user_meta_data` — which `handle_new_user` later reads (§5).
   - **Branch on `data.session`:**
@@ -119,16 +119,16 @@ So a brand-new user exists as: an `auth.users` row (possibly unconfirmed) + a `p
 
 ## 7. Live state & data-hygiene findings
 
-Pulled from the live `auth.users` on 2026-06-12:
+Pulled from the live `auth.users` (orphan cleanup applied 2026-06-30):
 
 | Signal | Finding |
 |--------|---------|
-| **6 auth users, 4 profiles** | **2 orphaned auth users** (created 2025-11-07 & 2025-11-10) with **null email, null provider** — i.e. **anonymous sign-ins** from early testing, predating the `handle_new_user` trigger, so they have **no profile row**. |
-| **Providers** | Everyone real is `provider = "email"`. **No OAuth/social, no magic-link** in use. |
-| **Confirmation** | Enforced (§4). 3 confirmed, 3 unconfirmed (Lila + the 2 anon). |
-| **Orphan risk** | An auth user with no profile would, if they marked, have a `userId` but `profile = null` → `isBlocked(null) = true` → **blocked** (Cat 1 §6.1 fail-closed handles it safely). Still worth cleaning up. |
+| **5 auth users, 5 profiles** | **No orphans** — one-to-one `auth.users` ↔ `profiles`. The 2 anonymous orphans (2025-11-07 & 2025-11-10) were **deleted 2026-06-30 (P7-7)**, and anonymous sign-in is now **disabled (P7-3)** so no new ones can appear. |
+| **Providers** | Everyone is `provider = "email"`. **No OAuth/social, no magic-link** in use. |
+| **Confirmation** | Enforced (§4). The unconfirmed (e.g. Lila) can now self-resend the link (P7-6). |
+| **Orphan risk** | Closed: no profile-less rows remain, and the source (anon sign-in) is off. The fail-closed guard (`isBlocked(null) = true`, Cat 1 §6.1) still protects against any future mismatch. |
 
-> **Action:** consider deleting the 2 orphaned anonymous users, and decide whether anonymous sign-in should be disabled in Supabase Auth (it appears to have been possible at some point).
+> **Action:** ✅ done — orphans deleted (P7-7), anonymous sign-in disabled (P7-3).
 
 ---
 
@@ -138,35 +138,91 @@ What a brand-new lecturer actually experiences today:
 
 ```
 1. Hit the app → middleware redirects to /login
-2. Sign up (name, email, password ≥6)
+2. Sign up (name, email, password ≥8)
 3. "Check your email to confirm"      ← must leave the app
 4. Click the email link → /auth/callback → session → /
 5. Land in the app … on the empty "Connect your files" state
 6. profiles row = plan 'none', R0  → marking is BLOCKED
-7. No "Start free trial" button, no guidance → DEAD END
-   (only escape: Michael manually runs set_plan(uuid,'trial'))
+7. A "Start your free trial" card is shown (TrialCta) → one click activates
+   a 7-day / R50 trial and marking is unblocked.  ✅ (P7-1, 2026-06-29)
 ```
 
-**This is the product's biggest onboarding gap.** Steps 5–7 give a confirmed, signed-in user *no self-serve path to value*. The expansion plan's Phase 1 (a prominent first-launch help system that shrinks to a corner) and Phase 2 (a self-serve "Start free trial" button that calls `set_plan(user,'trial')`) are the fixes. Until then, every new signup requires a manual grant.
+**The hard dead-end is closed (P7-1).** A `no_plan` user now sees a prominent **"Start free trial"** card on the main page:
+
+```
+TrialCta (no_plan only)
+  └─ POST /api/trial/start
+       ├─ identify caller from THEIR cookie session (never a body uuid)
+       ├─ refuse if plan != 'none' (don't downgrade a paid/active user)   → 409 already_has_plan
+       ├─ service-role  set_plan(user,'trial')   (EXECUTE is service_role-only)
+       │     └─ P1-7 one-trial-per-email guard → raises trial_already_used → 409
+       └─ ok → dispatch 'allowance-refresh' → AllowanceBar/PlanNotice/Mark gate re-read
+```
+
+- **Files:** `components/TrialCta.tsx` (the card + its idle/starting/started/used/error states), `app/api/trial/start/route.ts` (the grant route). `AllowanceBar` gained a `trial` → "Free trial" label.
+- **Already-used path:** a repeat claim (same email) surfaces P1-7's `trial_already_used` as an amber "you've already used your free trial → see plans" card, not an error.
+- **Still open (Phase 1):** the richer first-launch help/tour and plain-language onboarding copy — the *guidance* half — remain unbuilt (tracked under Cat 3 §10 and P7-6's onboarding bundle). What's fixed is the **path to value**; what's pending is the **hand-holding**.
+
+---
+
+## 8a. Account deletion & data export (P7-8, POPIA) — built 2026-06-30
+
+POPIA gives SA users the right to **access** and **delete** their personal data. Both now live in **Settings → Advanced** — a deliberately low-key, collapsed disclosure (not advertised), with **"Export my data"** at the bottom and **"Delete my account"** behind a confirmation step.
+
+**What we actually hold on a user** is mundane: identity (name/email), plan window, and a marking-activity log. **Student PDFs never reach the server** (marking is client-side), so there's no sensitive content to export or purge.
+
+**Export — `GET /api/account/export`:** raw CSV, **bare-minimum** fields only — name, email, plan, plan start/end, and the activity log (date · papers · quality tier). **Deliberately excludes Rand** (ADR-002: never show the user Rand) and all accounting/revenue rows (those are the business's books, not the user's personal data). Caller is identified from their own session; the file downloads client-side via a Blob.
+
+**Delete — `POST /api/account/delete`:** identifies the caller from their session, then `auth.admin.deleteUser(userId)` (service-role). The schema's FKs encode the entire retention policy — **no migration needed**:
+
+| Table | FK on `auth.users` | On delete | Why |
+|-------|--------------------|-----------|-----|
+| `profiles` | `on delete cascade` | **removed** | personal account row |
+| `usage_events` | `on delete cascade` | **removed** | personal activity log |
+| `trial_claims` | *(no FK; email-keyed)* | **kept** | so delete-then-re-signup can't re-claim the free trial (P1-7) |
+| `revenue_events` | `on delete set null` (+ `email` snapshot) | **kept** | financial/tax records must survive account deletion |
+
+After a successful delete the client signs out and routes to `/login`. The delete button has a two-step confirm ("Yes, delete my account" / "Cancel") and the warning explicitly notes the trial can't be re-claimed.
+
+> **Retention justification (POPIA):** keeping a single email + timestamp in `trial_claims` is minimal data retained for **fraud prevention** (a recognised lawful basis); `revenue_events` is retained for **financial record-keeping**. A future hardening could store a *hash* of the email in `trial_claims` so re-claims are still blocked without holding readable PII.
 
 ---
 
 ## 9. Known gaps & issues
 
-- **No onboarding / help system** — first-run is a bare empty state; no tour, no help button (Phase 1). Biggest UX gap, shared with Cat 3 §10.
-- **No self-serve trial** — new users are blocked until a manual SQL grant (§8). Phase 2.
+- **No onboarding / help system** — first-run still has no tour or help button (Phase 1). Biggest *remaining* UX gap, shared with Cat 3 §10.
+- ~~**No self-serve trial**~~ — **BUILT 2026-06-29** (§8, P7-1): the "Start free trial" card activates a 7-day/R50 trial in one click; no more manual SQL grant.
 - ~~**No password-reset flow**~~ — **BUILT 2026-06-16** (§4b). Login page now has a "Forgot your password?" path; `/reset-password` sets the new password.
-- ~~**Silent `?error=auth`**~~ — **resolved for the email flows 2026-06-25** (§4, P3-9): sign-ups land on `/auth/confirmed`, recovery on `/reset-password`, both with real copy. (Resend-confirmation UI still missing — see below.)
-- **Middleware has no `try/catch`** around `getUser()` — auth outage isn't degraded (§2, Cat 4 §7).
-- **Email-confirmation friction** — Lila is the live proof a user can sign up and get permanently stuck; no resend-confirmation UI exists.
-- **Orphaned anonymous users** — 2 profile-less auth rows (§7).
+- ~~**Silent `?error=auth`**~~ — **resolved for the email flows 2026-06-25** (§4, P3-9): sign-ups land on `/auth/confirmed`, recovery on `/reset-password`, both with real copy.
+- ~~**Middleware has no `try/catch`**~~ — **FIXED 2026-06-27** (P7-5): `getUser()` wrapped, fails closed to `/login`.
+- ~~**Email-confirmation friction / no resend UI**~~ — **BUILT 2026-06-30** (P7-6): login page has a "Resend confirmation link" action; a stuck-unconfirmed user (e.g. Lila) can re-trigger the email themselves.
+- ~~**Orphaned anonymous users**~~ — **DELETED 2026-06-30** (P7-7); anon sign-in disabled (P7-3) so no new ones appear.
+- ~~**`signOut` errors unhandled**~~ — **FIXED 2026-06-30** (P7-9): both entry points surface the failure and don't fake a sign-out.
+- **No account deletion / data-export** — POPIA gap (P7-8), still open.
 - **No OAuth / social login** — email/password only (fine for now; just noting).
+
+---
+
+## 9a. Supabase Auth dashboard hardening (P7-3 / P7-4) — done 2026-06-30
+
+These live in **GoTrue auth config**, which the app's SQL/MCP tooling can't write, so they were changed by hand in the Supabase dashboard (project `pdlkkfedovssaaecemkp`). Recorded here so the exact location is known if they ever need re-checking.
+
+**P7-3 — anonymous sign-ins → DISABLED ✅**
+- **Authentication → Sign In / Providers → User Signups → "Allow anonymous sign-ins"** toggled **off**.
+- Verified: security advisor **0012 no longer appears** in `get_advisors(security)`.
+- Still open: delete the 2 orphaned anon users left from before (P7-7).
+
+**P7-4 — password policy:**
+- **(a) Minimum length → 8 ✅** — **Authentication → Sign In / Providers → Email provider → "Minimum password length"** raised **6 → 8** (matches the sign-up form). Server-enforced now, not just client-side.
+- **(b) Leaked-password protection (HaveIBeenPwned) → DEFERRED ⬜** — the toggle (Email provider → *"Prevent use of leaked passwords"*, also surfaced on **Attack Protection**) is labelled **"Only available on Pro plan and above"**, and the org is on the **Free** tier. Cannot be enabled without upgrading Supabase. Tracked as **P7-11**; the `auth_leaked_password_protection` WARN advisor persists until then.
+
+> Zero-downtime, no effect on existing sessions. Sign-in min length stays at 6 client-side so anyone who set a 6-char password before this change can still get in and (if needed) reset it.
 
 ---
 
 ## 10. Onboarding roadmap (from `../expansion-plan.md`)
 - **Phase 1:** prominent first-launch help (big → corner), plain-language copy, the cross-browser file picker (so step 5 isn't a wall for non-Chromium users).
-- **Phase 2:** self-serve **"Start free trial"** button → a server action calling `set_plan(user,'trial')`, so steps 6–7 become a real path to value. The **one-trial-per-email abuse guard is already built** (P1-7, 2026-06-15) — `set_plan` refuses a repeat trial via the `trial_claims` ledger, so the button just needs to call it and surface the `trial_already_used` error. Also: trial-expiry / confirmation emails (Cat 3 §8).
+- **Phase 2:** ✅ self-serve **"Start free trial"** is **built** (P7-1, 2026-06-29) — `TrialCta` → `POST /api/trial/start` → service-role `set_plan(user,'trial')`, with P1-7's one-trial-per-email guard surfaced as `trial_already_used`. Remaining Phase-2 onboarding work: trial-expiry / confirmation emails (Cat 3 §8).
 
 ---
 
@@ -186,16 +242,17 @@ What a brand-new lecturer actually experiences today:
 
 | ID | Sev | Problem | Fix direction |
 |----|-----|---------|---------------|
-| **P7-1** | 🔴 | **First-run dead-ends** — a confirmed, signed-in user lands at R0/blocked with **no self-serve path** (no trial button, no guidance); only a manual `set_plan` unblocks them. | Build the self-serve "Start free trial" button (Phase 2) + onboarding (Phase 1). |
+| ~~**P7-1**~~ | ✅ | ~~**First-run dead-ends** — a confirmed, signed-in user lands at R0/blocked with **no self-serve path**; only a manual `set_plan` unblocks them.~~ — **FIXED 2026-06-29** (see §8): a `no_plan` user now sees a **"Start free trial"** card (`components/TrialCta.tsx`) → `POST /api/trial/start` → service-role `set_plan(user,'trial')` (7 days / R50). Self-identifies from the cookie session, refuses to downgrade an existing plan, and surfaces P1-7's `trial_already_used` as a "see plans" nudge. *(The richer onboarding/help tour — Phase 1 — is still open under P7-6/Cat 3.)* | Done. |
 | ~~**P7-2**~~ | ✅ | ~~**No password-reset flow** — `resetPasswordForEmail` is wired nowhere; a user who forgets their password is stuck. (= P3-2)~~ — **FIXED 2026-06-16** (see §4b): "Forgot your password?" on the login page → `resetPasswordForEmail` → existing `/auth/callback` → `app/reset-password/page.tsx` → `updateUser({ password })`. | Done. |
-| **P7-3** | 🟠 | **Anonymous sign-ins enabled** *(advisor 0012; + 2 orphaned anon users)* — anyone can create an anonymous session and pass middleware into the app shell. | Disable anonymous sign-in in Supabase Auth (unless intentionally used). |
-| **P7-4** | 🟠 | **Weak password security** — leaked-password protection is **disabled** *(advisor)*, and the only rule is `minLength 6`. | Enable HaveIBeenPwned check; raise minimum length / add strength rules. |
+| ~~**P7-3**~~ | ✅ | ~~**Anonymous sign-ins enabled** *(advisor 0012)* — anyone can create an anonymous session and pass middleware into the app shell.~~ — **FIXED 2026-06-30** (Auth → Sign In / Providers → "Allow anonymous sign-ins" turned **off**). Verified: security advisor **0012 no longer appears**. *(The 2 orphaned anon users remain — see P7-7.)* | Done. |
+| **P7-4** | 🟠 (partial) | **Weak password security.** Two halves: **(a) min length** — ✅ **done 2026-06-30**: sign-up form requires **≥8** (sign-in left at 6 so pre-existing 6-char passwords still work) **and** Supabase Auth → Email → *Minimum password length* raised **6 → 8**, so it's enforced server-side too. **(b) leaked-password protection (HaveIBeenPwned)** — ⬜ **blocked: Pro-only.** The dashboard toggle reads *"Only available on Pro plan and above"* and the org is on the **Free** tier, so the `auth_leaked_password_protection` advisor (WARN) will persist until Supabase is upgraded. | ✅ min length raised both sides. ⬜ HIBP deferred until Supabase Pro (see P7-11). |
 | ~~**P7-5**~~ | 🟢 | ✅ **FIXED (2026-06-27).** `getUser()` wrapped in try/catch in `middleware.ts`: a thrown lookup is logged and treated as no-user (fail closed), routing protected pages to `/login` instead of crashing page loads. (= P4-1) | Done. |
-| **P7-6** | 🟡 | ~~`?error=auth` never shown~~ — ✅ **error-display half fully resolved (P3-9, 2026-06-25; closes the Cat 4 twin P4-5)**: confirmations land on `/auth/confirmed`, recovery on `/reset-password`, never a bare error URL. **This row now owns only the remaining feature:** no **resend-confirmation UI** — a user who never clicks the link (e.g. Lila) is permanently stuck unconfirmed with no self-serve way out. Best built with the P7-1 onboarding work. | Add a "resend confirmation" action (`supabase.auth.resend`). |
-| **P7-7** | 🟡 | **Orphaned anonymous users** — 2 profile-less `auth.users` rows from Nov 2025 (pre-trigger). | Delete them; decide on anonymous sign-in (P7-3). |
-| **P7-8** | 🟠 | **No account deletion / data-subject flow** — POPIA gives SA users deletion/access rights; there's no path. | Add account deletion + data export (Phase 4). |
-| **P7-9** | 🟡 | **`signOut` errors unhandled** — if it fails, the user thinks they're out but isn't; also no OAuth/social (acceptable, noted). | Handle the sign-out error path. |
+| ~~**P7-6**~~ | ✅ | ~~`?error=auth` never shown~~ — error-display half resolved earlier (P3-9). ~~Remaining: no **resend-confirmation UI**.~~ — **FIXED 2026-06-30:** `app/login/page.tsx` now offers a **"Didn't get the email? Resend confirmation link"** action (`supabase.auth.resend({ type: 'signup' })`) — shown after a sign-up and after a failed sign-in whose error is *email not confirmed*. Email throttles surface via `authErrorMessage`. So a user like Lila can now re-trigger the link themselves. | Done. |
+| ~~**P7-7**~~ | ✅ | ~~**Orphaned anonymous users** — 2 profile-less `auth.users` rows from Nov 2025 (pre-trigger).~~ — **DELETED 2026-06-30** (`b90df96d…` 2025-11-07, `ccbf6e3f…` 2025-11-10; scoped `delete` requiring `is_anonymous` + null email + no profile). Verified: `auth.users` = 5, **anon = 0**, profiles = 5 (one-to-one, no orphans). | Done. |
+| ~~**P7-8**~~ | ✅ | ~~**No account deletion / data-subject flow** — POPIA gives SA users deletion/access rights; there's no path.~~ — **BUILT 2026-06-30** (see §8a). Settings → **Advanced** (low-key, collapsed) → **"Export my data (CSV)"** (`GET /api/account/export`, bare-minimum fields, no Rand) + **"Delete my account"** (confirmation step → `POST /api/account/delete`). Deletion hard-deletes `auth.users`; FK cascades remove `profiles`/`usage_events`, while `trial_claims` (re-trial guard) and `revenue_events` (tax records) are kept by design. **No migration needed** — the schema's cascade rules already encode the retention policy. | Done. |
+| ~~**P7-9**~~ | ✅ | ~~**`signOut` errors unhandled** — if it fails, the user thinks they're out but isn't.~~ — **FIXED 2026-06-30:** both sign-out entry points (`Sidebar.tsx`, `SettingsPanel.tsx`) now check `signOut()`'s returned error; on failure they show *"Couldn't sign you out — check your connection and try again"* and **do not navigate to `/login`** (so the user isn't misled into thinking a still-live session is closed). Button shows "Signing out…" + disabled during the call. *(No OAuth/social is still acceptable, noted.)* | Done. |
 | **P7-10** | 🟡 | **Redirect-URL coupling** — `emailRedirectTo` origin must stay in Supabase's allowed redirect URLs across every deploy/domain change. | Deploy checklist item. |
+| **P7-11** | 🔵 | **Leaked-password protection (HIBP) is Pro-gated** — the split-off remainder of P7-4(b). Supabase only offers the HaveIBeenPwned check on **Pro plan and above**; the org is on Free, so the `auth_leaked_password_protection` advisor stays WARN. | When/if Supabase is upgraded to Pro: Auth → Email → enable *"Prevent use of leaked passwords"*, then confirm the advisor clears. |
 
 ---
 
@@ -210,6 +267,10 @@ What a brand-new lecturer actually experiences today:
 | `app/reset-password/page.tsx` | Set-new-password page (recovery session → `updateUser`); see §4b |
 | `app/auth/callback/route.ts` | Email-link handler — PKCE + OTP; routes sign-ups → `/auth/confirmed`, recovery → `/reset-password` (P3-9) |
 | `app/auth/confirmed/page.tsx` | Friendly "You're all set!" landing after confirmation (P3-9) |
+| `components/TrialCta.tsx` | Self-serve "Start free trial" card for `no_plan` users (P7-1) |
+| `app/api/trial/start/route.ts` | Grants the trial — service-role `set_plan(user,'trial')`, P1-7-guarded (P7-1) |
+| `app/api/account/export/route.ts` | POPIA data export — bare-minimum CSV of the caller's data (P7-8) |
+| `app/api/account/delete/route.ts` | POPIA account deletion — `auth.admin.deleteUser`; cascades + retention by schema (P7-8) |
 | `components/Sidebar.tsx`, `components/SettingsPanel.tsx` | Sign-out entry points |
 | DB: `handle_new_user()` + `on_auth_user_created` | Auto-creates the profile at signup |
 | `auth.users`, `auth.identities` | Supabase-managed identity store |

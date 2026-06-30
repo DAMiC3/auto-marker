@@ -6,6 +6,7 @@ import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 
 const PLAN_LABELS: Record<string, string> = {
   none:     "No active plan",
+  trial:    "Free trial",
   standard: "Standard plan",
   pro:      "Pro plan",
 };

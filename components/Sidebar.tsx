@@ -30,6 +30,8 @@ export default function Sidebar({
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [showCreed, setShowCreed] = useState(false);
+  const [signingOut, setSigningOut]     = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
 
   // Esc closes whichever popover/menu is open (P3-6 accessibility).
   useEffect(() => {
@@ -42,8 +44,20 @@ export default function Sidebar({
   }, [menuOpen, showCreed]);
 
   async function handleSignOut() {
+    // P7-9: don't pretend success. If signOut errors (network/Supabase down), the
+    // session may still be live — keep the menu open with a clear error and let the
+    // user retry, rather than routing to /login as if they're out when they aren't.
+    setSignOutError(false);
+    setSigningOut(true);
+    try {
+      const { error } = await createClient().auth.signOut();
+      if (error) throw error;
+    } catch {
+      setSigningOut(false);
+      setSignOutError(true);
+      return;
+    }
     setMenuOpen(false);
-    await createClient().auth.signOut();
     router.push("/login");
     router.refresh();
   }
@@ -162,13 +176,19 @@ export default function Sidebar({
               <button
                 role="menuitem"
                 onClick={handleSignOut}
-                className="flex items-center gap-2.5 w-full text-left px-4 py-3 text-[13px] text-red-300 hover:bg-white/5 transition-colors border-t border-white/[0.07]"
+                disabled={signingOut}
+                className="flex items-center gap-2.5 w-full text-left px-4 py-3 text-[13px] text-red-300 hover:bg-white/5 transition-colors border-t border-white/[0.07] disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                 </svg>
-                Sign out
+                {signingOut ? "Signing out…" : "Sign out"}
               </button>
+              {signOutError && (
+                <p role="alert" className="px-4 py-2.5 text-[12px] text-red-300 bg-red-500/10 border-t border-white/[0.07]">
+                  Couldn’t sign you out — check your connection and try again.
+                </p>
+              )}
             </div>
           </>
         )}

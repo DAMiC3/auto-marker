@@ -6,6 +6,7 @@ import StrictnessSlider from "@/components/StrictnessSlider";
 import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings, saveSettings } from "@/components/SettingsPanel";
 import InstallButton from "@/components/InstallButton";
 import PlanNotice from "@/components/PlanNotice";
+import TrialCta from "@/components/TrialCta";
 import SubjectCombobox from "@/components/SubjectCombobox";
 import {
   type Folder,
@@ -739,6 +740,9 @@ export default function Home() {
 
         {/* Body */}
         <main className="flex-1 overflow-y-auto px-8 py-8 flex flex-col gap-6">
+
+          {/* Self-serve free-trial CTA for brand-new (no-plan) users (P7-1) */}
+          <TrialCta />
 
           {/* Plan expired / limit-reached banner (Problem 4) */}
           <PlanNotice />
