@@ -21,11 +21,12 @@ import {
   writeFile,
   uniqueName,
   createMarkedFolder,
+  getProblematicFolder,
   pickFile,
 } from "@/lib/fileSystem";
 import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
 import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
-import type { Annotation } from "@/lib/markingPrompt";
+import { hasFenceCollision, type Annotation } from "@/lib/markingPrompt";
 
 type MarkMode = "instant" | "batch";
 
@@ -106,8 +107,9 @@ interface BatchResult {
   total: number;
   available: number;
   percentage: number;
-  skipped?: boolean;   // non-PDF, left untouched in From (P2-8)
+  skipped?: boolean;       // non-PDF, left untouched in From (P2-8)
   failed?: boolean;
+  quarantined?: boolean;   // refused + moved to "Problematic papers" (P5-1)
 }
 
 // P2-8: AutoMark only ever touches PDFs. Non-PDFs are left untouched in the From
@@ -160,6 +162,7 @@ interface ChunkCtx {
   to: Folder;
   prepared: PreparedDoc[];   // unmarked PDFs, in submission order
   others: FileEntry[];       // non-PDFs, left in place and reported as skipped (P2-8)
+  quarantined: BatchResult[]; // papers refused for injection during prep (P5-1)
   quality: "standard" | "high";
   totalDocs: number;
 }
@@ -412,6 +415,24 @@ export default function Home() {
     }
   }
 
+  // P5-1: a paper that tried to forge the answer wrapper is refused — its original
+  // is moved to a "Problematic papers" folder (next to the connected root) with the
+  // reason in the filename, and it is never marked or sent to the model. `reason` is
+  // a parameter so the same quarantine path can be reused for other reasons later.
+  async function quarantinePaper(
+    from: Folder,
+    original: Uint8Array,
+    name: string,
+    reason = "attempted prompt injection",
+  ): Promise<BatchResult> {
+    const parent = root ?? from.handle;
+    const folder = await getProblematicFolder(parent);
+    const qname  = await uniqueName(folder.handle, name.replace(/\.pdf$/i, "") + ` (${reason}).pdf`);
+    await writeFile(folder.handle, qname, original);
+    await from.handle.removeEntry(name);
+    return { name: qname, total: 0, available: 0, percentage: 0, quarantined: true };
+  }
+
   // ── Instant: mark each paper synchronously ───────────────────────────────
   async function runInstant(from: Folder, to: Folder) {
     const batch = [...files];
@@ -421,8 +442,15 @@ export default function Home() {
       setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
       try {
         if (entry.name.toLowerCase().endsWith(".pdf")) {
-          const file    = await entry.handle.getFile();
-          const outcome = await markInstant(file, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
+          const file     = await entry.handle.getFile();
+          const prepared = await preparePaper(file);
+          // P5-1: refuse + quarantine a paper trying to forge the wrapper, before
+          // anything is sent to the model.
+          if (hasFenceCollision(prepared.pages)) {
+            done.push(await quarantinePaper(from, prepared.original, entry.name));
+            continue;
+          }
+          const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
           const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
           await writeFile(to.handle, marked, outcome.bytes);
           if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
@@ -444,8 +472,9 @@ export default function Home() {
     await finish(from, done, "Done");
   }
 
-  // Count of papers actually marked (excludes skipped non-PDFs and failures).
-  const markedCount = (d: BatchResult[]) => d.filter((x) => !x.skipped && !x.failed).length;
+  // Count of papers actually marked (excludes skipped non-PDFs, failures, and
+  // quarantined injection attempts).
+  const markedCount = (d: BatchResult[]) => d.filter((x) => !x.skipped && !x.failed && !x.quarantined).length;
 
   // One batch-submit attempt. The route returns 402 + `affordable` when the set is
   // over budget (no batch is created in that case — nothing is sent to Anthropic).
@@ -525,6 +554,7 @@ export default function Home() {
     // Prepare every PDF (page extraction) up front, watching the running memory
     // footprint so a huge (usually scanned) batch can't silently OOM the tab (P2-5).
     const prepared: PreparedDoc[] = [];
+    const quarantined: BatchResult[] = [];
     let usedBytes = 0;
     for (let i = 0; i < pdfs.length; i++) {
       setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
@@ -538,6 +568,12 @@ export default function Home() {
         // means we're already at the ceiling — surface the same friendly guidance.
         if (e instanceof RangeError) { setError(memoryGuardMessage(i, pdfs.length)); return; }
         throw e;
+      }
+      // P5-1: a wrapper-forgery attempt is refused and quarantined here — it never
+      // enters the batch and is never sent to the model.
+      if (hasFenceCollision(doc.pages)) {
+        quarantined.push(await quarantinePaper(from, doc.original, doc.name));
+        continue;
       }
       usedBytes += preparedBytes(doc);
       if (usedBytes > BATCH_MEMORY_BUDGET) {
@@ -563,12 +599,14 @@ export default function Home() {
       }
       // Offer the choice. handleMark's finally clears `busy`; the modal owns the
       // screen and canMark is disabled while chunkCtx is set (single-flight, C10).
-      setChunkCtx({ from, to, prepared, others, quality: settings.markingQuality, totalDocs: prepared.length });
+      setChunkCtx({ from, to, prepared, others, quarantined, quality: settings.markingQuality, totalDocs: prepared.length });
       return;
     }
 
-    // Whole job fit → one normal batch. Non-PDFs are left in place (P2-8).
+    // Whole job fit → one normal batch. Non-PDFs are left in place (P2-8);
+    // quarantined injection attempts are already moved (P5-1).
     recordSkipped(others, done);
+    done.push(...quarantined);
     const { results, recorded } = await pollBatch(probe.batchId, probe.quality);
     await applyChunkResults(results, prepared, from, to, done);
     if (!recorded) setError("Your papers are marked, but we couldn’t finish updating your usage just now — it’ll catch up shortly.");
@@ -595,8 +633,10 @@ export default function Home() {
     let remaining = [...ctx.prepared];
 
     try {
-      // Non-PDFs are left untouched in From and reported as skipped (P2-8).
+      // Non-PDFs are left untouched in From and reported as skipped (P2-8);
+      // injection attempts were quarantined during prep (P5-1).
       recordSkipped(ctx.others, done);
+      done.push(...ctx.quarantined);
 
       let iterations = 0;
       const maxIterations = ctx.prepared.length + 1; // C3 backstop: each pass marks ≥1 doc
@@ -704,12 +744,16 @@ export default function Home() {
     setFiles(await listFiles(from.handle));
     setResults(done);
     persistResults(done);
-    const marked  = done.filter((d) => !d.skipped && !d.failed).length;
-    const failed  = done.filter((d) => d.failed).length;
-    const skipped = done.filter((d) => d.skipped).length;
+    const marked      = done.filter((d) => !d.skipped && !d.failed && !d.quarantined).length;
+    const failed      = done.filter((d) => d.failed).length;
+    const skipped     = done.filter((d) => d.skipped).length;
+    const quarantined = done.filter((d) => d.quarantined).length;
     let msg = `${verb}. Marked ${marked} paper${marked === 1 ? "" : "s"} into “${toName}”.`;
     if (failed > 0) {
       msg += ` ${failed} paper${failed === 1 ? "" : "s"} couldn’t be marked and ${failed === 1 ? "was" : "were"} left in “${fromName}” to retry.`;
+    }
+    if (quarantined > 0) {
+      msg += ` ${quarantined} paper${quarantined === 1 ? "" : "s"} ${quarantined === 1 ? "was" : "were"} moved to “Problematic papers” (possible prompt injection) and not marked.`;
     }
     if (skipped > 0) {
       msg += ` ${skipped} non-PDF file${skipped === 1 ? "" : "s"} ${skipped === 1 ? "was" : "were"} left untouched in “${fromName}”.`;
@@ -1008,6 +1052,8 @@ export default function Home() {
                   <span className="text-[13px] text-slate-700 truncate mr-3">{r.name}</span>
                   {r.skipped ? (
                     <span className="text-[12px] text-slate-400 shrink-0">not a PDF — left in place</span>
+                  ) : r.quarantined ? (
+                    <span className="text-[12px] font-semibold text-amber-600 shrink-0 bg-amber-50 px-3 py-1 rounded-full">possible prompt injection — quarantined</span>
                   ) : r.failed ? (
                     <span className="text-[12px] font-semibold text-red-500 shrink-0 bg-red-50 px-3 py-1 rounded-full">not marked</span>
                   ) : (

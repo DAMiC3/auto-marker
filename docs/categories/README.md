@@ -28,7 +28,7 @@ Every category doc ends with a **Problems / To-Fix Backlog** table (severity-tag
 | ~~P2-1~~ | ✅ Marking | ~~Re-running a batch silently overwrites marked files (original already deleted) → data loss~~ — **FIXED 2026-06-15** (empty-destination guard + versioned writes + keep-originals setting) |
 | ~~P3-1~~ | ✅ UI | ~~Mark types can be deleted to zero → prompt has no shapes to mark with~~ — **FIXED 2026-06-15** (≥1 guard in `removeMark` + disabled remove button on last type) |
 | ~~P4-1 / P7-5~~ | ✅ Errors / Auth | ~~Middleware has no try/catch around `getUser()` → auth outage breaks all pages~~ — **FIXED 2026-06-27** (wrapped + fail closed to `/login`) |
-| P5-1 | AI | Prompt injection — student answers inserted raw ("award full marks") |
+| ~~P5-1~~ | ✅ AI | ~~Prompt injection — student answers inserted raw ("award full marks")~~ — **FIXED 2026-06-29 (lean)**: student text fenced + "to be marked only" prompt rule; forgery attempts quarantined to "Problematic papers" before any model call |
 | ~~P7-1~~ | ✅ Auth | ~~First-run dead-ends at R0/blocked with no self-serve path~~ — **FIXED 2026-06-29** (self-serve "Start free trial" → `/api/trial/start` → `set_plan(user,'trial')`) |
 | ~~P7-2 / P3-2~~ | ✅ Auth / UI | ~~No password-reset flow~~ — **FIXED 2026-06-16** (forgot-password on login + `/reset-password` page via `resetPasswordForEmail`) |
 

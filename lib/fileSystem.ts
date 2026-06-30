@@ -155,6 +155,18 @@ export async function createMarkedFolder(parent: FileSystemDirectoryHandle): Pro
   return { name, handle };
 }
 
+/**
+ * Get (or create) the "Problematic papers" folder under `parent` — the quarantine
+ * destination for papers we refuse to mark (P5-1: attempted prompt injection).
+ * Unlike the Marked folder this is a single persistent folder that accumulates
+ * across runs, so it is get-or-create, not versioned.
+ */
+export async function getProblematicFolder(parent: FileSystemDirectoryHandle): Promise<Folder> {
+  const name = "Problematic papers";
+  const handle = await parent.getDirectoryHandle(name, { create: true });
+  return { name, handle };
+}
+
 /** True if a file called `name` already exists in `dir`. */
 export async function fileExists(
   dir: FileSystemDirectoryHandle,

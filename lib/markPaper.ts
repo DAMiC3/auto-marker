@@ -261,14 +261,16 @@ export async function stampPaper(
 
 // ── Instant single-paper marking ─────────────────────────────────────────────
 export async function markInstant(
-  file: File,
+  prepared: PreparedPaper,
   memoText: string,
   subject: string,
   strictness: number,
   markTypes: MarkType[],
   quality: "standard" | "high" = "standard"
 ): Promise<MarkOutcome> {
-  const { original, pages } = await preparePaper(file);
+  // P5-1: the caller prepares the paper first so it can run the injection check
+  // (hasFenceCollision) and quarantine before any text is sent to the model.
+  const { original, pages } = prepared;
 
   const res = await fetch("/api/mark", {
     method: "POST",
