@@ -858,17 +858,22 @@ export default function Home() {
                           <option key={f.name} value={f.name} disabled={f.name === fromName}>{f.name}</option>
                         ))}
                       </select>
-                      <button
-                        type="button"
-                        onClick={handleCreateMarkedFolder}
-                        className="mt-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--accent-600)] hover:text-[var(--accent-700)] transition-colors"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                        </svg>
-                        Create new folder for marked documents
-                      </button>
                     </div>
+                  </div>
+
+                  {/* Below the row (not inside the To column) so it doesn't unbalance
+                      the From/To selects' height and knock them out of alignment. */}
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleCreateMarkedFolder}
+                      className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--accent-600)] hover:text-[var(--accent-700)] transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                      </svg>
+                      Create new folder for marked documents
+                    </button>
                   </div>
 
                   {/* Memo archive */}

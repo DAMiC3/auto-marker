@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "build:cf": "opennextjs-cloudflare build",
+    "dev": "node scripts/gen-version.mjs && next dev",
+    "build": "node scripts/gen-version.mjs && next build",
+    "build:cf": "node scripts/gen-version.mjs && opennextjs-cloudflare build",
     "preview:cf": "opennextjs-cloudflare preview",
     "start": "next start",
     "lint": "eslint"

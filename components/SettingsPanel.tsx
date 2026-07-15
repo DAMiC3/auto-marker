@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import MarkShapeIcon, { type MarkShape, MARK_SHAPES } from "@/components/MarkShapeIcon";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatExpiry, isExpired } from "@/lib/allowance";
+import { APP_VERSION, APP_BUILT_AT } from "@/lib/version";
 
 const PLAN_LABELS: Record<string, string> = {
   none:     "No active plan",
@@ -677,19 +678,31 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 flex gap-3 shrink-0">
-          <button
-            onClick={onClose}
-            className="flex-1 rounded-xl py-3 text-[14px] font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            className="flex-1 rounded-xl py-3 text-[14px] font-semibold text-white bg-[var(--accent-600)] hover:bg-[var(--accent-700)] transition-colors"
-          >
-            Save changes
-          </button>
+        <div className="px-6 pt-3 pb-4 border-t border-slate-200 flex flex-col gap-3 shrink-0">
+          {/* Build version — regenerated at every deploy (scripts/gen-version.mjs) so
+              it's obvious here whether a new update is actually live, vs. still cached. */}
+          <p className="text-[11px] text-slate-400 text-center">
+            {APP_VERSION === "dev"
+              ? "Local dev build"
+              : `Version ${APP_VERSION} · built ${new Date(APP_BUILT_AT).toLocaleString(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}`}
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="flex-1 rounded-xl py-3 text-[14px] font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              className="flex-1 rounded-xl py-3 text-[14px] font-semibold text-white bg-[var(--accent-600)] hover:bg-[var(--accent-700)] transition-colors"
+            >
+              Save changes
+            </button>
+          </div>
         </div>
       </div>
 

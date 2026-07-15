@@ -44,6 +44,10 @@ next-env.d.ts
 .open-next/
 .wrangler/
 
+# generated at build time by scripts/gen-version.mjs (npm run dev/build/build:cf) —
+# never hand-edit or commit, it would just go stale
+lib/version.ts
+
 # claude per-session hook flags (keep commands/settings, ignore the flags)
 .claude/.brief-*
 # claude personal/local settings (machine-specific permissions)
