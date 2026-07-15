@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import MarkShapeIcon, { type MarkShape, MARK_SHAPES } from "@/components/MarkShapeIcon";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { formatExpiry, isExpired } from "@/lib/allowance";
-import { APP_VERSION, APP_BUILT_AT } from "@/lib/version";
+import { APP_VERSION } from "@/lib/version";
+import { BUILD_COMMIT, BUILT_AT } from "@/lib/buildInfo";
 
 const PLAN_LABELS: Record<string, string> = {
   none:     "No active plan",
@@ -102,9 +103,10 @@ interface Props {
   onClose: () => void;
   onSave: (s: Settings) => void;
   initial: Settings;
+  onTakeTour?: () => void;
 }
 
-export default function SettingsPanel({ open, onClose, onSave, initial }: Props) {
+export default function SettingsPanel({ open, onClose, onSave, initial, onTakeTour }: Props) {
   const router = useRouter();
   const [strictness, setStrictness] = useState(initial.defaultStrictness);
   const [accent, setAccent]         = useState(initial.accent);
@@ -576,6 +578,29 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
             </div>
           </section>
 
+          {/* Help */}
+          <section className="border-t border-slate-100 pt-6">
+            <h3 className="text-[14px] font-semibold text-slate-800 mb-3">Help</h3>
+            <div className="flex flex-col gap-2">
+              {onTakeTour && (
+                <button
+                  type="button"
+                  onClick={() => { onClose(); onTakeTour(); }}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-slate-200 text-slate-700 text-[13.5px] font-medium hover:bg-slate-50 transition-colors"
+                >
+                  Take the guided tour again
+                </button>
+              )}
+              <Link
+                href="/best-practices"
+                onClick={onClose}
+                className="w-full text-left px-4 py-3 rounded-xl border border-slate-200 text-slate-700 text-[13.5px] font-medium hover:bg-slate-50 transition-colors"
+              >
+                Best practices guide
+              </Link>
+            </div>
+          </section>
+
           {/* Account */}
           <section className="border-t border-slate-100 pt-6">
             <h3 className="text-[14px] font-semibold text-slate-800 mb-3">Account</h3>
@@ -679,15 +704,19 @@ export default function SettingsPanel({ open, onClose, onSave, initial }: Props)
 
         {/* Footer */}
         <div className="px-6 pt-3 pb-4 border-t border-slate-200 flex flex-col gap-3 shrink-0">
-          {/* Build version — regenerated at every deploy (scripts/gen-version.mjs) so
-              it's obvious here whether a new update is actually live, vs. still cached. */}
+          {/* Version — APP_VERSION is hand-bumped per release; the build commit/time
+              (scripts/gen-version.mjs, regenerated every deploy) is the fine-grained
+              proof a specific deploy is actually live, vs. still cached. */}
           <p className="text-[11px] text-slate-400 text-center">
-            {APP_VERSION === "dev"
-              ? "Local dev build"
-              : `Version ${APP_VERSION} · built ${new Date(APP_BUILT_AT).toLocaleString(undefined, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                })}`}
+            Version {APP_VERSION}
+            {BUILD_COMMIT !== "dev" && (
+              <>
+                {" "}
+                · build {BUILD_COMMIT} (
+                {new Date(BUILT_AT).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+                )
+              </>
+            )}
           </p>
           <div className="flex gap-3">
             <button

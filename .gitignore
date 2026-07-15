@@ -45,8 +45,9 @@ next-env.d.ts
 .wrangler/
 
 # generated at build time by scripts/gen-version.mjs (npm run dev/build/build:cf) —
-# never hand-edit or commit, it would just go stale
-lib/version.ts
+# never hand-edit or commit, it would just go stale (lib/version.ts is the separate,
+# hand-bumped release number and IS committed)
+lib/buildInfo.ts
 
 # claude per-session hook flags (keep commands/settings, ignore the flags)
 .claude/.brief-*

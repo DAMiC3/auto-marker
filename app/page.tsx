@@ -1,13 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import StrictnessSlider from "@/components/StrictnessSlider";
 import SettingsPanel, { type Settings, DEFAULT_SETTINGS, loadSettings, saveSettings } from "@/components/SettingsPanel";
 import InstallButton from "@/components/InstallButton";
+import HelpButton from "@/components/HelpButton";
+import OnboardingPrompt from "@/components/OnboardingPrompt";
+import GuidedTour from "@/components/GuidedTour";
 import PlanNotice from "@/components/PlanNotice";
 import TrialCta from "@/components/TrialCta";
 import SubjectCombobox from "@/components/SubjectCombobox";
+import { hasSeenOnboarding, markOnboardingSeen } from "@/lib/onboarding";
+import { TOUR_STEPS } from "@/lib/tourSteps";
 import {
   type Folder,
   type FileEntry,
@@ -174,9 +180,15 @@ type SubmitResult =
   | { kind: "error"; code: string };
 
 export default function Home() {
+  const router = useRouter();
   const [strictness, setStrictness] = useState(7);
   const [settings, setSettings]     = useState<Settings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // First-login onboarding (see lib/onboarding.ts) + the re-triggerable guided tour.
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showTour, setShowTour]             = useState(false);
+  const [helpPulse, setHelpPulse]           = useState(false);
 
   // ── File system state ──────────────────────────────────────────────────
   // Assume supported during SSR/first render to avoid a hydration mismatch;
@@ -233,7 +245,27 @@ export default function Home() {
   useEffect(() => {
     setMounted(true);
     setSupported(isSupported());
+    if (!hasSeenOnboarding()) setShowOnboarding(true);
   }, []);
+
+  // Any of the three onboarding choices counts as "seen" — never nag again.
+  function finishOnboarding() {
+    markOnboardingSeen();
+    setShowOnboarding(false);
+  }
+  function handleTakeTour() {
+    finishOnboarding();
+    setShowTour(true);
+  }
+  function handleOnboardingBestPractices() {
+    finishOnboarding();
+    router.push("/best-practices");
+  }
+  function handleJustExplore() {
+    finishOnboarding();
+    setHelpPulse(true);
+    setTimeout(() => setHelpPulse(false), 1800);
+  }
 
   // Load the memo archive on mount
   useEffect(() => {
@@ -779,7 +811,10 @@ export default function Home() {
         {/* Header */}
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shrink-0">
           <h1 className="text-[18px] font-semibold text-slate-900">Mark New Batch</h1>
-          <InstallButton />
+          <div className="flex items-center gap-3">
+            <InstallButton />
+            <HelpButton onTakeTour={() => setShowTour(true)} pulse={helpPulse} />
+          </div>
         </header>
 
         {/* Body */}
@@ -791,7 +826,9 @@ export default function Home() {
           {/* Plan expired / limit-reached banner (Problem 4) */}
           <PlanNotice />
 
-          <StrictnessSlider value={strictness} onChange={setStrictness} />
+          <div data-tour="strictness">
+            <StrictnessSlider value={strictness} onChange={setStrictness} />
+          </div>
 
           {/* Not supported notice */}
           {mounted && !supported && (
@@ -802,7 +839,7 @@ export default function Home() {
 
           {/* Files workspace */}
           {supported && (
-            <div className="bg-white rounded-2xl border border-slate-200 px-7 py-6">
+            <div className="bg-white rounded-2xl border border-slate-200 px-7 py-6" data-tour="files-card">
               <div className="flex items-center justify-between mb-5">
                 <h2 className="text-[15px] font-semibold text-slate-900">Files</h2>
                 {!root && (
@@ -997,7 +1034,7 @@ export default function Home() {
           )}
 
           {/* Marking mode */}
-          <div className="bg-white rounded-2xl border border-slate-200 px-7 py-5 flex items-center justify-between">
+          <div className="bg-white rounded-2xl border border-slate-200 px-7 py-5 flex items-center justify-between" data-tour="mode">
             <div>
               <h2 className="text-[15px] font-semibold text-slate-900">Marking mode</h2>
               <p className="text-[13px] text-slate-500 mt-0.5">
@@ -1023,6 +1060,7 @@ export default function Home() {
 
           {/* Mark button — AI marks each paper, then moves it to the To folder */}
           <button
+            data-tour="mark-button"
             onClick={handleMark}
             disabled={!canMark}
             className={`w-full rounded-2xl py-5 flex flex-col items-center gap-1 font-bold text-[18px] text-white transition-all ${
@@ -1088,7 +1126,17 @@ export default function Home() {
           setSettings(s);
           setStrictness(s.defaultStrictness);
         }}
+        onTakeTour={() => setShowTour(true)}
       />
+
+      {/* First-login onboarding + the re-triggerable guided tour (lib/onboarding.ts) */}
+      <OnboardingPrompt
+        open={showOnboarding}
+        onTakeTour={handleTakeTour}
+        onBestPractices={handleOnboardingBestPractices}
+        onJustExplore={handleJustExplore}
+      />
+      <GuidedTour steps={TOUR_STEPS} active={showTour} onFinish={() => setShowTour(false)} />
 
       {/* Over-limit dialog (P1-4) — shown when a batch is too big for the allowance.
           Figures are documents only; never Rand (ADR-002). */}

@@ -102,7 +102,7 @@ export default function Sidebar({
 
       {/* Nav */}
       <nav className="flex-1 px-3 pt-5 flex flex-col gap-1 overflow-y-auto">
-        <div className="flex items-center justify-between px-2 mb-1">
+        <div className="flex items-center justify-between px-2 mb-1" data-tour="connect">
           <p className="text-[10px] font-semibold tracking-[1.5px] text-[#657BAA]">FILES</p>
           {connected && (
             <button
@@ -156,7 +156,9 @@ export default function Sidebar({
 
       {/* Allowance + user row + menu */}
       <div className="relative px-3 pb-5">
-        <AllowanceBar />
+        <div data-tour="allowance">
+          <AllowanceBar />
+        </div>
         {menuOpen && (
           <>
             {/* click-away catcher */}
@@ -198,6 +200,7 @@ export default function Sidebar({
           aria-haspopup="true"
           aria-expanded={menuOpen}
           aria-label="Account menu"
+          data-tour="account"
           className="flex items-center gap-3 w-full px-3 py-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] transition-colors"
         >
           <div className="w-8 h-8 rounded-full bg-[var(--accent-600)] shrink-0 flex items-center justify-center text-[11px] font-bold text-white">
