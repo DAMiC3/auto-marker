@@ -22,6 +22,13 @@ export interface Doc {
   getFile: () => Promise<File>;
   remove?: () => Promise<void>;
   fromZip: boolean;
+  // Set only for papers that came from inside a zip, so marked output can be
+  // written BACK into a zip of the same shape ("put files back how they were"):
+  //   zipName  — the output zip's base path in the To folder (mirrors where the
+  //              source zip sat), e.g. "classA/submissions".
+  //   zipEntry — this paper's path INSIDE that zip, e.g. "student1_123/essay.pdf".
+  zipName?: string;
+  zipEntry?: string;
 }
 
 export interface Collected {
@@ -56,6 +63,8 @@ export async function collectDocs(from: FileSystemDirectoryHandle): Promise<Coll
       docs.push({
         path: `${prefix}/${entry.name}`,
         fromZip: true,
+        zipName: prefix,
+        zipEntry: entry.name,
         getFile: async () => {
           const blob = await entry.async("blob");
           const base = entry.name.split("/").pop() || entry.name;

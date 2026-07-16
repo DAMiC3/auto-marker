@@ -123,15 +123,20 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 
 The From folder is no longer a flat list. `collectDocs(from)` (`lib/collectDocs.ts`) gathers markable PDFs by **walking every subfolder to any depth** *and* **expanding any `.zip` inside it** (browser-side, via `jszip`). This is what lets a lecturer drop a Moodle **"Download all submissions"** archive straight into the From folder, or keep papers nested per class/student, and have everything marked.
 
-Each PDF becomes a `Doc { path, getFile, remove?, fromZip }`:
-- **`path`** is relative to the From folder (`"classA/essay.pdf"`, or `"<zipbase>/student1_123_.../essay.pdf"` for zip contents). Marked output **mirrors this path** into the To folder via `writeFileNested` — so a Moodle "download in folders" student-identifier structure survives intact and the To folder can be re-zipped and uploaded back through **"Upload multiple feedback files in a zip"**. The `" (marked)"` suffix is appended *before* `.pdf`, keeping the identifier Moodle matches on.
+Each PDF becomes a `Doc { path, getFile, remove?, fromZip, zipName?, zipEntry? }`:
+- **`path`** is relative to the From folder (`"classA/essay.pdf"`, or `"<zipbase>/student1_123_.../essay.pdf"` for zip contents). The `" (marked)"` suffix is appended *before* `.pdf`, keeping the identifier Moodle matches on.
 - **`getFile`** is lazy (disk handle or zip entry) so instant marking doesn't hold every file in memory; zip entries are decompressed only when marked.
 - **`remove`** deletes the disk original after a successful mark; it is **undefined for zip entries** — AutoMark never mutates the user's downloaded zip (so `keepOriginals` is effectively always on for zip papers).
+- **`zipName` / `zipEntry`** are set only for zip papers, so the output can be re-zipped (below).
 - AutoMark's own output folders (`"Marked …"`, `"Problematic papers"`) are **skipped** during the walk, so pointing From at the workspace root can't re-mark prior output.
+
+**Output — "put files back how they were":** the shape of the output matches the shape of the input, routed by `writeMarked` (`app/page.tsx`):
+- **Loose files** (nested to any depth) → **mirrored** into the To folder as individual files via `writeFileNested`, preserving the subfolder tree.
+- **Zip papers** → accumulated by origin zip in a `ZipSink` (`lib/markedZip.ts`, one `JSZip` per source zip) and written back as **`"<zipName> (marked).zip"`** with the **same internal folder structure** — a drop-in for Moodle **"Upload multiple feedback files in a zip"** with no manual re-zipping. Only successfully-marked papers are added (a zip whose papers all failed is never created); the sink is flushed in a `finally` so a mid-run abort (allowance ran out) still writes the partial zip.
 
 Non-PDF disk files anywhere in the tree are collected as `others` and reported as skipped (P2-8); non-PDF entries inside a zip are ignored silently.
 
-> **Not yet built:** auto-zipping the To folder for upload (the user zips it themselves today), and selecting a bare `.zip` via a file picker instead of dropping it in the From folder. The full Moodle **Web Services API** path (token auth, auto pull/push) is a separate, larger effort — see the Moodle integration notes.
+> **Not yet built:** selecting a bare `.zip` via a file picker instead of dropping it in the From folder, and preserving a zip's *non-PDF* entries in the returned zip (only marked PDFs are re-zipped today). The full Moodle **Web Services API** path (token auth, auto pull/push) is a separate, larger effort — see the Moodle integration notes.
 
 ### 6.3 Output naming & side effects
 - Marked file: `"<original name without .pdf> (marked).pdf"`, run through `uniqueName()` so a name collision is **versioned** (`"… (marked) (2).pdf"`) instead of overwriting (P2-1).
@@ -150,6 +155,7 @@ Non-PDF disk files anywhere in the tree are collected as `others` and reported a
 | Concern | Mechanism | File |
 |---|---|---|
 | Document collection | Recursive folder walk + in-browser zip expansion (`jszip`) → `Doc[]` | `lib/collectDocs.ts` |
+| Zip output round-trip | Re-zip marked papers back into `"<zip> (marked).zip"` (one `JSZip` per source zip) | `lib/markedZip.ts` |
 | Folder access | File System Access API (`showDirectoryPicker`, read/write, `writeFileNested` for mirrored output) | `lib/fileSystem.ts` |
 | Folder handle persistence | IndexedDB `automark-fs` / `handles` / `root` | `lib/fileSystem.ts` |
 | Memo archive | IndexedDB `automark-memos` / `memos` (text + original blob) | `lib/memoArchive.ts` |
@@ -194,6 +200,7 @@ Non-PDF disk files anywhere in the tree are collected as `others` and reported a
 | File | Role |
 |------|------|
 | `lib/collectDocs.ts` | `collectDocs` — recurse subfolders + expand zips into a flat `Doc[]` of PDFs to mark |
+| `lib/markedZip.ts` | `createZipSink` — accumulate marked papers per source zip and write them back as `"<zip> (marked).zip"`; `markedLeaf` |
 | `lib/markPaper.ts` | `preparePaper` (extract), `stampPaper` (draw), `markInstant`, `extractMemoText` |
 | `lib/markingPrompt.ts` | `MODELS`, `PageContent`/`Annotation` types, `buildSystem`/`buildContent`, `parseMarkResponse`, (unused) `mockResult` |
 | `lib/fileSystem.ts` | File System Access API + IndexedDB folder handles; move/write/read |

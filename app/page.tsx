@@ -33,6 +33,7 @@ import {
   createFolderStructure,
 } from "@/lib/fileSystem";
 import { collectDocs, type Doc } from "@/lib/collectDocs";
+import { createZipSink, markedLeaf, type ZipSink } from "@/lib/markedZip";
 import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
 import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
 import { hasFenceCollision, type Annotation } from "@/lib/markingPrompt";
@@ -131,6 +132,28 @@ function recordSkipped(others: Doc[], done: BatchResult[]) {
   for (const e of others) done.push({ name: e.path, total: 0, available: 0, percentage: 0, skipped: true });
 }
 
+// Enough of a Doc/PreparedDoc to decide where a marked paper's bytes go.
+type MarkTarget = { path: string; zipName?: string; zipEntry?: string };
+
+// Route one marked paper to its output, "putting it back how it came":
+//  • from inside a zip  → into that origin zip (accumulated in `sink`, written
+//    back out as "<zip> (marked).zip" with the same internal structure);
+//  • a loose file       → mirrored into the To folder as an individual file.
+// Returns the logical name to show in the Results list.
+async function writeMarked(
+  to: FileSystemDirectoryHandle,
+  target: MarkTarget,
+  bytes: Uint8Array,
+  sink: ZipSink,
+): Promise<string> {
+  if (target.zipName != null && target.zipEntry != null) {
+    const entry = markedLeaf(target.zipEntry);
+    sink.add(target.zipName, entry, bytes);
+    return `${target.zipName} (marked).zip › ${entry}`;
+  }
+  return writeFileNested(to, markedLeaf(target.path), bytes);
+}
+
 // A PDF prepared for marking (pages extracted), carried through the batch/chunk loop.
 // `path` is its location relative to the From folder (mirrored into the To folder);
 // `remove` deletes the original once marked (undefined for papers from inside a zip).
@@ -138,6 +161,8 @@ interface PreparedDoc {
   customId: string;
   path: string;
   remove?: () => Promise<void>;
+  zipName?: string;   // carried from the source Doc so batch output can re-zip
+  zipEntry?: string;
   original: Uint8Array;
   pages: PageContent[];
 }
@@ -544,37 +569,44 @@ export default function Home() {
     const batch = [...docs];
     const extra = [...others];
     const done: BatchResult[] = [];
-    for (let i = 0; i < batch.length; i++) {
-      const doc = batch[i];
-      setProgress(`Marking ${i + 1} of ${batch.length}: ${doc.path}`);
-      try {
-        const file     = await doc.getFile();
-        const prepared = await preparePaper(file);
-        // P5-1: refuse + quarantine a paper trying to forge the wrapper, before
-        // anything is sent to the model.
-        if (hasFenceCollision(prepared.pages)) {
-          done.push(await quarantinePaper(from, doc, prepared.original));
-          continue;
+    const sink = createZipSink();          // re-zips papers that came from a zip
+    let zipOut: string[] = [];
+    try {
+      for (let i = 0; i < batch.length; i++) {
+        const doc = batch[i];
+        setProgress(`Marking ${i + 1} of ${batch.length}: ${doc.path}`);
+        try {
+          const file     = await doc.getFile();
+          const prepared = await preparePaper(file);
+          // P5-1: refuse + quarantine a paper trying to forge the wrapper, before
+          // anything is sent to the model.
+          if (hasFenceCollision(prepared.pages)) {
+            done.push(await quarantinePaper(from, doc, prepared.original));
+            continue;
+          }
+          const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality, settings.feedback);
+          // Put it back how it came: into its origin zip, or mirrored as a loose file.
+          const written = await writeMarked(to.handle, doc, outcome.bytes, sink);
+          if (!settings.keepOriginals) await doc.remove?.();
+          done.push({ name: written, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : "Marking failed.";
+          // Plan/auth gate failure → every remaining paper fails too. Abort the run.
+          if (FATAL_RUN_ERRORS.has(msg)) throw e;
+          // A failure specific to this paper (bad PDF, truncation, parse error…):
+          // record it, leave the original untouched so it can be retried, and
+          // keep marking the rest of the batch instead of aborting (P2-3).
+          done.push({ name: doc.path, total: 0, available: 0, percentage: 0, failed: true });
         }
-        const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality, settings.feedback);
-        // Mirror the source path into the To folder, appending " (marked)" before
-        // ".pdf" — this preserves any Moodle student-identifier folder/filename.
-        const written = await writeFileNested(to.handle, doc.path.replace(/\.pdf$/i, "") + " (marked).pdf", outcome.bytes);
-        if (!settings.keepOriginals) await doc.remove?.();
-        done.push({ name: written, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : "Marking failed.";
-        // Plan/auth gate failure → every remaining paper fails too. Abort the run.
-        if (FATAL_RUN_ERRORS.has(msg)) throw e;
-        // A failure specific to this paper (bad PDF, truncation, parse error…):
-        // record it, leave the original untouched so it can be retried, and
-        // keep marking the rest of the batch instead of aborting (P2-3).
-        done.push({ name: doc.path, total: 0, available: 0, percentage: 0, failed: true });
       }
+    } finally {
+      // Always write the re-zipped output — even on a mid-run abort, so papers
+      // already marked into a zip aren't lost.
+      zipOut = await sink.flush(to.handle).catch(() => []);
     }
     // Non-PDFs are left where they are and reported (P2-8).
     recordSkipped(extra, done);
-    await finish(from, done, "Done");
+    await finish(from, done, "Done", zipOut);
   }
 
   // Count of papers actually marked (excludes skipped non-PDFs, failures, and
@@ -625,6 +657,7 @@ export default function Home() {
     subset: PreparedDoc[],
     to: Folder,
     done: BatchResult[],
+    sink: ZipSink,
   ) {
     const byId = new Map(subset.map((p) => [p.customId, p]));
     for (const [cid, r] of Object.entries(results)) {
@@ -632,7 +665,8 @@ export default function Home() {
       if (!p) continue;
       if ("error" in r) { done.push({ name: p.path, total: 0, available: 0, percentage: 0, failed: true }); continue; }
       const bytes   = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "", settings.feedback);
-      const written = await writeFileNested(to.handle, p.path.replace(/\.pdf$/i, "") + " (marked).pdf", bytes);
+      // Put it back how it came: into its origin zip, or mirrored as a loose file.
+      const written = await writeMarked(to.handle, p, bytes, sink);
       if (!settings.keepOriginals) await p.remove?.();
       done.push({ name: written, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
     }
@@ -664,7 +698,7 @@ export default function Home() {
       let doc: PreparedDoc;
       try {
         const { original, pages } = await preparePaper(file);
-        doc = { customId: `p${i}`, path: pdfs[i].path, remove: pdfs[i].remove, original, pages };
+        doc = { customId: `p${i}`, path: pdfs[i].path, remove: pdfs[i].remove, zipName: pdfs[i].zipName, zipEntry: pdfs[i].zipEntry, original, pages };
       } catch (e) {
         // An allocation failure mid-prep (RangeError: array buffer / string too long)
         // means we're already at the ceiling — surface the same friendly guidance.
@@ -709,10 +743,12 @@ export default function Home() {
     // quarantined injection attempts are already moved (P5-1).
     recordSkipped(extra, done);
     done.push(...quarantined);
+    const sink = createZipSink();
     const { results, recorded } = await pollBatch(probe.batchId, probe.quality);
-    await applyChunkResults(results, prepared, to, done);
+    await applyChunkResults(results, prepared, to, done, sink);
+    const zipOut = await sink.flush(to.handle).catch(() => []);
     if (!recorded) setError("Your papers are marked, but we couldn’t finish updating your usage just now — it’ll catch up shortly.");
-    await finish(from, done, "Batch done");
+    await finish(from, done, "Batch done", zipOut);
   }
 
   // ── The automatic chunk loop (P1-4) ──────────────────────────────────────
@@ -732,6 +768,7 @@ export default function Home() {
 
     const { from, to, quality } = ctx;
     const done: BatchResult[] = [];
+    const sink = createZipSink();          // re-zips papers that came from a zip
     let remaining = [...ctx.prepared];
 
     try {
@@ -772,7 +809,7 @@ export default function Home() {
         // C5: await completion AND the usage record before sizing the next chunk.
         const { results, recorded } = await pollBatch(submitted.batchId, submitted.quality);
         const chunkDocs = remaining.slice(0, chunkSize);
-        await applyChunkResults(results, chunkDocs, to, done);
+        await applyChunkResults(results, chunkDocs, to, done, sink);
         remaining = remaining.slice(chunkSize); // C7: advance only after applying
         window.dispatchEvent(new Event("allowance-refresh"));
 
@@ -794,15 +831,19 @@ export default function Home() {
         if (!fe.recognized) reportError(msg, "chunk-loop");
       }
     } finally {
+      // Write the re-zipped output for any papers that came from a zip — even a
+      // partial run (allowance ran out) still gets its marked papers zipped back.
+      const zipOut = await sink.flush(to.handle).catch(() => []);
+      const zipNote = zipOut.length > 0 ? ` Marked papers were packed back into ${zipOut.map((z) => `“${z}”`).join(", ")}.` : "";
       await loadDocsFrom(from.handle).catch(() => {});
       setResults(done);
       persistResults(done);
       const marked = markedCount(done);
       const leftover = remaining.length;
       if (leftover > 0) {
-        setMessage(`Marked ${marked} of ${ctx.totalDocs} document${ctx.totalDocs === 1 ? "" : "s"}. The remaining ${leftover} ${leftover === 1 ? "is" : "are"} still in “${fromName}” — renew your plan to finish ${leftover === 1 ? "it" : "them"}.`);
+        setMessage(`Marked ${marked} of ${ctx.totalDocs} document${ctx.totalDocs === 1 ? "" : "s"}. The remaining ${leftover} ${leftover === 1 ? "is" : "are"} still in “${fromName}” — renew your plan to finish ${leftover === 1 ? "it" : "them"}.${zipNote}`);
       } else {
-        setMessage(`Done. Marked ${marked} document${marked === 1 ? "" : "s"} into “${toName}”.`);
+        setMessage(`Done. Marked ${marked} document${marked === 1 ? "" : "s"} into “${toName}”.${zipNote}`);
       }
       setBusy(false);
       setProgress(null);
@@ -842,7 +883,7 @@ export default function Home() {
     throw new Error("Batch is taking longer than expected — it may still finish. Try again shortly.");
   }
 
-  async function finish(from: Folder, done: BatchResult[], verb: string) {
+  async function finish(from: Folder, done: BatchResult[], verb: string, zipOut: string[] = []) {
     await loadDocsFrom(from.handle);
     setResults(done);
     persistResults(done);
@@ -859,6 +900,9 @@ export default function Home() {
     }
     if (skipped > 0) {
       msg += ` ${skipped} non-PDF file${skipped === 1 ? "" : "s"} ${skipped === 1 ? "was" : "were"} left untouched in “${fromName}”.`;
+    }
+    if (zipOut.length > 0) {
+      msg += ` Marked papers were packed back into ${zipOut.map((z) => `“${z}”`).join(", ")} — ready to upload.`;
     }
     setMessage(msg);
   }
