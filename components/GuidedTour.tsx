@@ -2,6 +2,46 @@
 
 import { useEffect, useState } from "react";
 import type { TourStep } from "@/lib/tourSteps";
+import { STRUCTURE_PARENT, STRUCTURE_FROM, STRUCTURE_TO, STRUCTURE_MEMO } from "@/lib/fileSystem";
+
+function FolderIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+    </svg>
+  );
+}
+
+// The required folder layout, drawn as a little tree so a new user can SEE the shape
+// their connected folder needs. Names match the structure the app creates + selects
+// (lib/fileSystem.ts), so this diagram and "Create folder structure" stay in sync.
+function FolderStructureDiagram() {
+  const children: { name: string; caption: string }[] = [
+    { name: STRUCTURE_FROM, caption: "papers to be marked go here" },
+    { name: STRUCTURE_TO,   caption: "marked papers appear here" },
+    { name: STRUCTURE_MEMO, caption: "keep your answer key here" },
+  ];
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+      <div className="flex items-center gap-2 text-[12.5px] font-semibold text-slate-700">
+        <FolderIcon className="w-4 h-4 text-[var(--accent-600)]" />
+        <span>{STRUCTURE_PARENT}</span>
+        <span className="text-[11px] font-normal text-slate-400">— the folder you connect</span>
+      </div>
+      <div className="mt-1.5 ml-2 border-l border-slate-200 pl-3 flex flex-col gap-1.5">
+        {children.map((c) => (
+          <div key={c.name} className="flex items-baseline gap-2">
+            <FolderIcon className="w-3.5 h-3.5 text-slate-400 shrink-0 self-center" />
+            <div className="min-w-0">
+              <span className="text-[12.5px] font-medium text-slate-700">{c.name}</span>
+              <span className="text-[11px] text-slate-400 ml-1.5">{c.caption}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface Props {
   steps: TourStep[];
@@ -127,6 +167,7 @@ export default function GuidedTour({ steps, active, onFinish }: Props) {
         </div>
         <h3 className="text-[14.5px] font-semibold text-slate-900">{step.title}</h3>
         <p className="text-[13px] text-slate-500 mt-1 leading-relaxed">{step.body}</p>
+        {step.visual === "folders" && <FolderStructureDiagram />}
         <div className="mt-4 flex items-center justify-between">
           <button
             type="button"

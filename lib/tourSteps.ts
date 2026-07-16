@@ -6,22 +6,24 @@ export interface TourStep {
   target: string;
   title: string;
   body: string;
+  // Optional illustration rendered inside the tour card. "folders" draws the
+  // required folder-structure diagram (see components/GuidedTour.tsx).
+  visual?: "folders";
 }
 
 export const TOUR_STEPS: TourStep[] = [
   {
-    target: "create-structure",
-    title: "Set up your folders in one click",
+    target: "connect",
+    title: "Connect your folder",
     body:
-      "AutoMark works with three folders: one for papers to mark, one for finished (marked) papers, and one for your memo. " +
-      "Not sure how to arrange them? Click “Create folder structure”, choose where to put it, and AutoMark builds all three for you — and selects them automatically.",
+      "AutoMark reads and writes a folder on your computer. For it to work, that folder should be laid out like this — three folders inside one:",
+    visual: "folders",
   },
   {
-    target: "connect",
-    title: "…or connect a folder you already have",
+    target: "create-structure",
+    title: "Don’t have that set up? One click does it",
     body:
-      "Already keep your papers in a folder? Click “Connect your files” and choose it — its subfolders become your classes. " +
-      "If you’re unsure, just pick any empty folder and follow the rest of the steps.",
+      "If you don’t already have those folders, click “Create folder structure”, choose where to put it, and AutoMark builds all three for you — then selects them automatically so you can start marking straight away.",
   },
   {
     target: "from-folder",

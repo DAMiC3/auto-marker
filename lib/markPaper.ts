@@ -227,31 +227,64 @@ export async function stampPaper(
     p0.drawText(label, { x: width - w - 20, y: height - 34, size: 16, font, color: rgb(0.86, 0.15, 0.15) });
   }
 
-  // Marker's notes + overall comment at the bottom of the last page
-  if (pages.length > 0 && (notes.length > 0 || summary.trim())) {
-    const last = pages[pages.length - 1];
-    const { width } = last.getSize();
-    const maxW = width - 100;
-    const lh = 12;
+  // ── Marker's feedback on dedicated appended page(s) ──────────────────────────
+  // The notes + overall summary are often long and used to be drawn at the bottom
+  // of the last exam page, where they overprinted the student's answers. Instead we
+  // lay them out on fresh page(s) appended AFTER the paper, adding exactly as many
+  // pages as the wrapped text needs so nothing is ever written over the exam.
+  //
+  // (Appending happens after the annotation loop, so it never shifts the page
+  //  indices the annotations were placed on.)
+  if (notes.length > 0 || summary.trim()) {
+    // Match the paper's own page size so the feedback pages look part of the doc;
+    // fall back to A4 if the source somehow had no pages.
+    const ref = pages[pages.length - 1];
+    const { width: PW, height: PH } = ref ? ref.getSize() : { width: 595.28, height: 841.89 };
 
-    const block: { text: string; size: number; color: RGB }[] = [];
+    const LEFT = 50, RIGHT = 50, TOP = 58, BOTTOM = 50;
+    const maxW = PW - LEFT - RIGHT;
+    const lh = 14;              // body line height on a feedback page
+    const titleSize = 14;
+    const bodySize = 10;
+    const afterTitleGap = 12;   // space below the page title before the first line
+
+    // Flatten the feedback into a list of already-wrapped lines, each with an
+    // optional gap above it (to separate the heading / notes / overall blocks).
+    interface FbLine { text: string; size: number; color: RGB; gapBefore: number }
+    const lines: FbLine[] = [];
+
     if (notes.length > 0) {
-      block.push({ text: "Marker's notes:", size: 10, color: rgb(0.2, 0.2, 0.2) });
+      lines.push({ text: "Marker's notes", size: 11, color: rgb(0.15, 0.15, 0.15), gapBefore: 0 });
       for (const n of notes) {
-        wrapText(`• ${n.marks}  ${n.comment}`, font, 9, maxW).forEach((ln, i) =>
-          block.push({ text: ln, size: 9, color: i === 0 ? n.color : rgb(0.35, 0.35, 0.35) })
+        const label = n.marks ? `• ${n.marks}  ${n.comment}` : `• ${n.comment}`;
+        wrapText(label, font, bodySize, maxW).forEach((ln, i) =>
+          lines.push({ text: ln, size: bodySize, color: i === 0 ? n.color : rgb(0.35, 0.35, 0.35), gapBefore: i === 0 ? 5 : 0 })
         );
       }
     }
     if (summary.trim()) {
-      wrapText(`Overall: ${summary.trim()}`, font, 9, maxW).forEach((ln) =>
-        block.push({ text: ln, size: 9, color: rgb(0.2, 0.2, 0.2) })
+      wrapText(`Overall: ${summary.trim()}`, font, bodySize, maxW).forEach((ln, i) =>
+        lines.push({ text: ln, size: bodySize, color: rgb(0.15, 0.15, 0.15), gapBefore: i === 0 ? (notes.length > 0 ? 12 : 0) : 0 })
       );
     }
 
-    let y = 28 + (block.length - 1) * lh;
-    for (const b of block) {
-      last.drawText(b.text, { x: 50, y, size: b.size, font, color: b.color });
+    // Work out how many pages are needed by laying the lines out and starting a new
+    // page whenever the next line (plus its gap) would cross the bottom margin.
+    const startPage = (continued: boolean): { page: PDFPage; y: number } => {
+      const page = pdfDoc.addPage([PW, PH]);
+      let y = PH - TOP;
+      page.drawText(continued ? "Marker's feedback (continued)" : "Marker's feedback", {
+        x: LEFT, y, size: titleSize, font, color: rgb(0.1, 0.1, 0.1),
+      });
+      y -= titleSize + afterTitleGap;
+      return { page, y };
+    };
+
+    let { page, y } = startPage(false);
+    for (const ln of lines) {
+      if (y - (ln.gapBefore + lh) < BOTTOM) ({ page, y } = startPage(true));
+      y -= ln.gapBefore;
+      page.drawText(ln.text, { x: LEFT, y, size: ln.size, font, color: ln.color });
       y -= lh;
     }
   }
