@@ -58,6 +58,7 @@ const SECTIONS: { title: string; points: string[] }[] = [
       "Default marking strictness — the strictness each new batch starts on; you can still override it per run with the slider on the main screen.",
       "Marking engine — Standard is fast and handles most tests; High accuracy is more thorough for tricky or high-stakes papers but uses more of your allowance.",
       "Original files — “Remove originals” deletes each unmarked paper from the From folder once it's marked; “Keep for marking” leaves it there so you can re-mark it.",
+      "Feedback on marked papers — “Include feedback” adds a note per answer and an overall summary on extra pages after each paper; “No feedback” stamps only ticks and scores, which uses less of your allowance.",
       "Mark types — the ticks, crosses and symbols AutoMark stamps, each with its own colour and shape. These are what appear in the margin of marked papers.",
       "Accent colour — a cosmetic theme colour for the app.",
       "You can reopen this guide or replay the guided tour any time from Settings, or the “?” button at the top-right.",

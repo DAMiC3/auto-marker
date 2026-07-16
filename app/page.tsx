@@ -525,7 +525,7 @@ export default function Home() {
             done.push(await quarantinePaper(from, prepared.original, entry.name));
             continue;
           }
-          const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality);
+          const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality, settings.feedback);
           const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
           await writeFile(to.handle, marked, outcome.bytes);
           if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
@@ -558,7 +558,7 @@ export default function Home() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        memoText, subject, strictness, quality,
+        memoText, subject, strictness, quality, feedback: settings.feedback,
         markTypes: settings.markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
         papers: docs.map((p) => ({ customId: p.customId, pages: p.pages })),
       }),
@@ -602,7 +602,7 @@ export default function Home() {
       const p = byId.get(cid);
       if (!p) continue;
       if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0, failed: true }); continue; }
-      const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "");
+      const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "", settings.feedback);
       const marked = await uniqueName(to.handle, p.name.replace(/\.pdf$/i, "") + " (marked).pdf");
       await writeFile(to.handle, marked, bytes);
       if (!settings.keepOriginals) await from.handle.removeEntry(p.name);

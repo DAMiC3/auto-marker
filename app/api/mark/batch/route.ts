@@ -24,6 +24,7 @@ interface BatchRequest {
   subject: string;
   strictness: number;
   quality?: "standard" | "high";
+  feedback?: boolean;
   markTypes: MarkTypeInput[];
   papers: PaperInput[];
 }
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest) {
   const rid = newRequestId();
   try {
     const body = (await req.json()) as BatchRequest;
-    const { memoText, subject, strictness, markTypes, papers, quality = "standard" } = body;
+    const { memoText, subject, strictness, markTypes, papers, quality = "standard", feedback = true } = body;
 
     if (!papers || papers.length === 0) {
       return NextResponse.json({ error: "No papers to mark." }, { status: 400 });
@@ -111,7 +112,7 @@ export async function POST(req: NextRequest) {
       params: {
         model,
         max_tokens: MAX_OUTPUT_TOKENS,
-        system: buildSystem(strictness, markTypes, subject),
+        system: buildSystem(strictness, markTypes, subject, feedback),
         messages: [{ role: "user" as const, content: buildContent(memoText, p.pages) }],
       },
     }));

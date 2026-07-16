@@ -39,6 +39,7 @@ export interface Settings {
   markingQuality: MarkingQuality;
   subjects: string[]; // user-managed list for the subject combobox
   keepOriginals: boolean; // keep the unmarked PDF in the source folder after marking
+  feedback: boolean; // include marker's notes + overall summary on marked papers (off = saves allowance)
 }
 
 // Standard exam-marking mark types (M/A/B/E/FT/C), as used by e-marking tools
@@ -60,6 +61,7 @@ export const DEFAULT_SETTINGS: Settings = {
   markingQuality: "standard",
   subjects: ["English", "Mathematics"],
   keepOriginals: false,
+  feedback: true,
 };
 
 const ACCENTS: { key: string; label: string; swatch: string }[] = [
@@ -87,6 +89,7 @@ export function loadSettings(): Settings {
       markingQuality: parsed.markingQuality ?? DEFAULT_SETTINGS.markingQuality,
       subjects: parsed.subjects && parsed.subjects.length > 0 ? parsed.subjects : DEFAULT_SETTINGS.subjects,
       keepOriginals: parsed.keepOriginals ?? DEFAULT_SETTINGS.keepOriginals,
+      feedback: parsed.feedback ?? DEFAULT_SETTINGS.feedback,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -114,6 +117,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial, onTakeTo
   const [markTypes, setMarkTypes]   = useState<MarkType[]>(initial.markTypes);
   const [quality, setQuality]       = useState<MarkingQuality>(initial.markingQuality);
   const [keepOriginals, setKeepOriginals] = useState<boolean>(initial.keepOriginals);
+  const [feedback, setFeedback]     = useState<boolean>(initial.feedback);
 
   // Current plan + expiry (read-only — shown so the user knows when they renew)
   const [planInfo, setPlanInfo] = useState<{ plan: string; periodEnd: string | null } | null>(null);
@@ -137,6 +141,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial, onTakeTo
       setMarkTypes(initial.markTypes);
       setQuality(initial.markingQuality);
       setKeepOriginals(initial.keepOriginals);
+      setFeedback(initial.feedback);
       // Collapse Advanced and clear any half-open delete confirmation (P7-8).
       setAdvancedOpen(false);
       setConfirmDelete(false);
@@ -227,7 +232,7 @@ export default function SettingsPanel({ open, onClose, onSave, initial, onTakeTo
   }
 
   function handleSave() {
-    const next: Settings = { defaultStrictness: strictness, accent, profile, markTypes, markingQuality: quality, subjects: initial.subjects, keepOriginals };
+    const next: Settings = { defaultStrictness: strictness, accent, profile, markTypes, markingQuality: quality, subjects: initial.subjects, keepOriginals, feedback };
     saveSettings(next);
     document.documentElement.dataset.accent = accent;
     onSave(next);
@@ -456,6 +461,40 @@ export default function SettingsPanel({ open, onClose, onSave, initial, onTakeTo
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[13px] font-semibold text-slate-800">{opt.title}</span>
                     {keepOriginals === opt.key && (
+                      <svg className="w-4 h-4 text-[var(--accent-600)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </div>
+                  <span className="text-[12px] text-slate-500 leading-snug block">{opt.desc}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* Feedback — written comments + overall summary, or marks only (saves allowance) */}
+          <section className="border-t border-slate-100 pt-6">
+            <h3 className="text-[14px] font-semibold text-slate-800 mb-1">Feedback on marked papers</h3>
+            <p className="text-[12px] text-slate-400 mb-3">
+              Whether marked papers get written feedback — a note per answer plus an overall summary — or just the ticks and scores. Turning feedback off uses less of your allowance.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {([
+                { key: true,  title: "Include feedback", desc: "Add marker’s notes and an overall summary on extra pages after each paper." },
+                { key: false, title: "No feedback",      desc: "Stamp only ticks, symbols and scores. Uses less allowance." },
+              ] as { key: boolean; title: string; desc: string }[]).map((opt) => (
+                <button
+                  key={String(opt.key)}
+                  onClick={() => setFeedback(opt.key)}
+                  className={`text-left rounded-xl border p-4 transition-colors ${
+                    feedback === opt.key
+                      ? "border-[var(--accent-500)] bg-[var(--accent-50)]"
+                      : "border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[13px] font-semibold text-slate-800">{opt.title}</span>
+                    {feedback === opt.key && (
                       <svg className="w-4 h-4 text-[var(--accent-600)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                       </svg>

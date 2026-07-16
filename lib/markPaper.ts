@@ -182,14 +182,18 @@ function drawShape(page: PDFPage, shape: string, x: number, y: number, s: number
   }
 }
 
-/** Stamp annotations (1-based page index) onto the original PDF bytes. */
+/** Stamp annotations (1-based page index) onto the original PDF bytes.
+ *  `includeFeedback` off ⇒ stamp only shapes + scores + total, and append no
+ *  feedback pages — honouring the user's "No feedback" setting even if the model
+ *  returned stray notes/summary. */
 export async function stampPaper(
   original: Uint8Array,
   annotations: Annotation[],
   markTypes: MarkType[],
   total: number,
   available: number,
-  summary = ""
+  summary = "",
+  includeFeedback = true
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(original);
   const font   = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -215,7 +219,7 @@ export async function stampPaper(
 
     drawShape(page, ann.shape, x, y, 12, color);
     if (ann.marks) page.drawText(ann.marks, { x: width - 32, y: y - 15, size: 9, font, color });
-    if (ann.comment) notes.push({ marks: ann.marks, comment: ann.comment, color });
+    if (includeFeedback && ann.comment) notes.push({ marks: ann.marks, comment: ann.comment, color });
   }
 
   const p0 = pages[0];
@@ -235,7 +239,8 @@ export async function stampPaper(
   //
   // (Appending happens after the annotation loop, so it never shifts the page
   //  indices the annotations were placed on.)
-  if (notes.length > 0 || summary.trim()) {
+  const effectiveSummary = includeFeedback ? summary : "";
+  if (notes.length > 0 || effectiveSummary.trim()) {
     // Match the paper's own page size so the feedback pages look part of the doc;
     // fall back to A4 if the source somehow had no pages.
     const ref = pages[pages.length - 1];
@@ -262,8 +267,8 @@ export async function stampPaper(
         );
       }
     }
-    if (summary.trim()) {
-      wrapText(`Overall: ${summary.trim()}`, font, bodySize, maxW).forEach((ln, i) =>
+    if (effectiveSummary.trim()) {
+      wrapText(`Overall: ${effectiveSummary.trim()}`, font, bodySize, maxW).forEach((ln, i) =>
         lines.push({ text: ln, size: bodySize, color: rgb(0.15, 0.15, 0.15), gapBefore: i === 0 ? (notes.length > 0 ? 12 : 0) : 0 })
       );
     }
@@ -299,7 +304,8 @@ export async function markInstant(
   subject: string,
   strictness: number,
   markTypes: MarkType[],
-  quality: "standard" | "high" = "standard"
+  quality: "standard" | "high" = "standard",
+  feedback = true
 ): Promise<MarkOutcome> {
   // P5-1: the caller prepares the paper first so it can run the injection check
   // (hasFenceCollision) and quarantine before any text is sent to the model.
@@ -313,6 +319,7 @@ export async function markInstant(
       subject,
       strictness,
       quality,
+      feedback,
       pages,
       markTypes: markTypes.map((m) => ({ abbrev: m.abbrev, label: m.label, shape: m.shape })),
     }),
@@ -325,7 +332,7 @@ export async function markInstant(
   }
 
   const data  = await res.json();
-  const bytes = await stampPaper(original, data.annotations ?? [], markTypes, data.total ?? 0, data.available ?? 0, data.summary ?? "");
+  const bytes = await stampPaper(original, data.annotations ?? [], markTypes, data.total ?? 0, data.available ?? 0, data.summary ?? "", feedback);
   return {
     bytes,
     total: data.total ?? 0,

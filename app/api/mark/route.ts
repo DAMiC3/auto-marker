@@ -17,6 +17,7 @@ interface MarkRequest {
   subject: string;
   strictness: number;
   quality?: "standard" | "high";
+  feedback?: boolean;
   markTypes: MarkTypeInput[];
   pages: PageContent[];
 }
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
   const rid = newRequestId();
   try {
     const body = (await req.json()) as MarkRequest;
-    const { memoText, subject, strictness, markTypes, pages, quality = "standard" } = body;
+    const { memoText, subject, strictness, markTypes, pages, quality = "standard", feedback = true } = body;
 
     if (!pages || pages.length === 0) {
       return NextResponse.json({ error: "No pages to mark." }, { status: 400 });
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
     const message = await client.messages.create({
       model,
       max_tokens: MAX_OUTPUT_TOKENS,
-      system: buildSystem(strictness, markTypes, subject),
+      system: buildSystem(strictness, markTypes, subject, feedback),
       messages: [{ role: "user", content: buildContent(memoText, pages) }],
     });
 
