@@ -26,9 +26,11 @@ import {
   listFiles,
   writeFile,
   uniqueName,
-  createMarkedFolder,
   getProblematicFolder,
   pickFile,
+  pickDirectory,
+  saveRoot,
+  createFolderStructure,
 } from "@/lib/fileSystem";
 import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
 import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
@@ -218,6 +220,12 @@ export default function Home() {
   const [addingMemo, setAddingMemo] = useState(false);
   const [connecting, setConnecting] = useState(false);
 
+  // "Create folder structure" (sidebar): building the folders, and whether the
+  // currently selected From/To are the just-created ones (drives the "already
+  // chosen" note). Any manual From/To change clears the flag.
+  const [creatingStructure, setCreatingStructure] = useState(false);
+  const [autoStructure, setAutoStructure]         = useState(false);
+
   // Over-limit chunk dialog (P1-4). `chunkCtx` non-null ⇒ the modal is open and a
   // run is paused awaiting the user's choice; `chunkInfo` toggles the "more info" text.
   const [chunkCtx, setChunkCtx]   = useState<ChunkCtx | null>(null);
@@ -333,6 +341,7 @@ export default function Home() {
       setFromName(null);
       setToName(null);
       setFiles([]);
+      setAutoStructure(false);
     } catch (e: unknown) {
       // User cancelling the picker throws — ignore that case quietly
       if (e instanceof DOMException && e.name === "AbortError") return;
@@ -364,22 +373,56 @@ export default function Home() {
   // Single-flight (C10): no new run while busy OR while the chunk dialog is open.
   const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy && !chunkCtx;
 
-  // Create a fresh, empty "Marked <date>" folder and use it as the destination.
-  // Guaranteed empty, so it always passes the destination-empty check on Mark.
-  async function handleCreateMarkedFolder() {
-    if (!root) return;
+  // "Create folder structure" (sidebar): the user picks WHERE, and we build the
+  // full AutoMark layout there — a parent folder containing "Documents to mark",
+  // "Marked documents", and "Memo" — then adopt the parent as the connected root
+  // and auto-select From/To. One click turns an empty disk location into a ready
+  // workspace, so a new user never has to arrange folders themselves.
+  async function handleCreateStructure() {
     setError(null);
+    setMessage(null);
+    let location: FileSystemDirectoryHandle;
     try {
-      const folder = await createMarkedFolder(root);
-      setFolders(await listFolders(root));
-      setToName(folder.name);
+      location = await pickDirectory();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Could not create a marked-documents folder.";
+      if (e instanceof DOMException && e.name === "AbortError") return; // user cancelled the picker
+      const msg = e instanceof Error ? e.message : "Could not open the folder.";
       const fe = friendlyError(msg);
       setError(fe.message);
-      if (!fe.recognized) reportError(msg, "create-folder");
+      if (!fe.recognized) reportError(msg, "create-structure");
+      return;
+    }
+    setCreatingStructure(true);
+    try {
+      if (!(await ensurePermission(location))) {
+        setError("Permission to create the folders there was not granted.");
+        return;
+      }
+      const s = await createFolderStructure(location);
+      await saveRoot(s.root);
+      setRoot(s.root);
+      setFolders(await listFolders(s.root));
+      setFromName(s.fromName);
+      setToName(s.toName);
+      setAutoStructure(true);
+      setMessage(
+        `Created your “${s.rootName}” folders. Put the papers you want to mark into “${s.fromName}”, ` +
+          `then add your memo — marked papers will be saved to “${s.toName}”.`,
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Could not create the folder structure.";
+      const fe = friendlyError(msg);
+      setError(fe.message);
+      if (!fe.recognized) reportError(msg, "create-structure");
+    } finally {
+      setCreatingStructure(false);
     }
   }
+
+  // Manually changing From or To means the selection is no longer the freshly
+  // created structure, so drop the "already chosen for you" note.
+  function chooseFrom(name: string | null) { setAutoStructure(false); setFromName(name); }
+  function chooseTo(name: string | null)   { setAutoStructure(false); setToName(name); }
 
   async function handleAddMemo() {
     const file = await pickFile();
@@ -801,8 +844,10 @@ export default function Home() {
         connected={!!root}
         profileName={settings.profile.name}
         profileSubject={settings.profile.subject}
+        creatingStructure={creatingStructure}
         onConnect={handleConnect}
-        onSelectFolder={setFromName}
+        onCreateStructure={handleCreateStructure}
+        onSelectFolder={chooseFrom}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
@@ -863,11 +908,13 @@ export default function Home() {
                 <div className="flex flex-col gap-5">
                   {/* From / To selectors */}
                   <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                      <label className="block text-[12px] font-medium text-slate-500 mb-1.5">From folder</label>
+                    <div className="flex-1" data-tour="from-folder">
+                      <label className="block text-[12px] font-medium text-slate-500 mb-1.5">
+                        From folder <span className="text-slate-400 font-normal">— where your papers are</span>
+                      </label>
                       <select
                         value={fromName ?? ""}
-                        onChange={(e) => setFromName(e.target.value || null)}
+                        onChange={(e) => chooseFrom(e.target.value || null)}
                         className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-[14px] text-slate-800 bg-white outline-none focus:border-[var(--accent-500)]"
                       >
                         <option value="">Select…</option>
@@ -883,11 +930,13 @@ export default function Home() {
                       </svg>
                     </div>
 
-                    <div className="flex-1">
-                      <label className="block text-[12px] font-medium text-slate-500 mb-1.5">To folder</label>
+                    <div className="flex-1" data-tour="to-folder">
+                      <label className="block text-[12px] font-medium text-slate-500 mb-1.5">
+                        To folder <span className="text-slate-400 font-normal">— where marked papers go</span>
+                      </label>
                       <select
                         value={toName ?? ""}
-                        onChange={(e) => setToName(e.target.value || null)}
+                        onChange={(e) => chooseTo(e.target.value || null)}
                         className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-[14px] text-slate-800 bg-white outline-none focus:border-[var(--accent-500)]"
                       >
                         <option value="">Select…</option>
@@ -898,23 +947,19 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Below the row (not inside the To column) so it doesn't unbalance
-                      the From/To selects' height and knock them out of alignment. */}
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={handleCreateMarkedFolder}
-                      className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--accent-600)] hover:text-[var(--accent-700)] transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  {/* Shown right after "Create folder structure" auto-selects the new
+                      folders, so the user knows they don't need to touch the selects. */}
+                  {autoStructure && fromName && toName && (
+                    <div className="flex items-start gap-2 -mt-2 text-[12.5px] text-green-700 bg-green-50 border border-green-200 rounded-lg px-3.5 py-2.5">
+                      <svg className="w-4 h-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                       </svg>
-                      Create new folder for marked documents
-                    </button>
-                  </div>
+                      <span>The folders we just created are already chosen — “{fromName}” to mark, “{toName}” for the results. Just add your memo and mark.</span>
+                    </div>
+                  )}
 
                   {/* Memo archive */}
-                  <div>
+                  <div data-tour="memo">
                     <label className="block text-[12px] font-medium text-slate-500 mb-1.5">Memo (answer key)</label>
                     {memos.length === 0 ? (
                       <div className="flex items-center gap-3">

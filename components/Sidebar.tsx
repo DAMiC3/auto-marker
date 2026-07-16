@@ -12,7 +12,9 @@ interface Props {
   connected: boolean;
   profileName: string;
   profileSubject: string;
+  creatingStructure: boolean;
   onConnect: () => void;
+  onCreateStructure: () => void;
   onSelectFolder: (name: string) => void;
   onOpenSettings: () => void;
 }
@@ -23,7 +25,9 @@ export default function Sidebar({
   connected,
   profileName,
   profileSubject,
+  creatingStructure,
   onConnect,
+  onCreateStructure,
   onSelectFolder,
   onOpenSettings,
 }: Props) {
@@ -102,6 +106,23 @@ export default function Sidebar({
 
       {/* Nav */}
       <nav className="flex-1 px-3 pt-5 flex flex-col gap-1 overflow-y-auto">
+        {/* One-click folder setup — sits above FILES so it's the first thing a new
+            user reaches. Builds the parent + "to mark" / "marked" / "memo" folders
+            and auto-selects them (see app/page.tsx handleCreateStructure). */}
+        <button
+          onClick={onCreateStructure}
+          disabled={creatingStructure}
+          data-tour="create-structure"
+          title="Create the AutoMark folder structure for you"
+          className="flex items-center gap-2 w-full text-left px-3 py-2.5 mb-3 rounded-lg text-[12.5px] font-medium text-[#EFF4FE] border border-[var(--accent-500)]/40 bg-[var(--accent-600)]/15 hover:bg-[var(--accent-600)]/25 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v5m-2.5-2.5h5" />
+          </svg>
+          {creatingStructure ? "Creating…" : "Create folder structure"}
+        </button>
+
         <div className="flex items-center justify-between px-2 mb-1" data-tour="connect">
           <p className="text-[10px] font-semibold tracking-[1.5px] text-[#657BAA]">FILES</p>
           {connected && (

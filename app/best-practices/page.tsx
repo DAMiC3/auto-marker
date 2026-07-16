@@ -2,6 +2,15 @@ import Link from "next/link";
 
 const SECTIONS: { title: string; points: string[] }[] = [
   {
+    title: "Setting up your folders",
+    points: [
+      "AutoMark works with three folders: one for papers to mark, one for finished (marked) papers, and one for your memo.",
+      "Not sure how to arrange them? Click “Create folder structure” in the left sidebar — choose where to put it and AutoMark builds all three for you and selects them automatically.",
+      "Prefer your own layout? Click “Connect your files” and pick any folder — its subfolders become your classes, and you choose which is the From and which is the To folder.",
+      "The From folder is where your unmarked papers live; the To folder is where marked copies are saved (it must start empty); the Memo folder is just a tidy place to keep your answer key.",
+    ],
+  },
+  {
     title: "Getting your memo right",
     points: [
       "The more specific your memo, the more accurate the marking — write it like you would for a human marker.",
@@ -40,6 +49,18 @@ const SECTIONS: { title: string; points: string[] }[] = [
       "Consistent file names (e.g. including the student number) make results easier to sort and match up afterwards.",
       "Keep your memo out of the \"From\" folder — otherwise AutoMark will try to mark it too.",
       "If marks look wrong on a re-run, tighten the memo's wording rather than just raising strictness.",
+    ],
+  },
+  {
+    title: "What the Settings do",
+    points: [
+      "Profile — your display name and default subject, used to label runs and pre-fill the subject box.",
+      "Default marking strictness — the strictness each new batch starts on; you can still override it per run with the slider on the main screen.",
+      "Marking engine — Standard is fast and handles most tests; High accuracy is more thorough for tricky or high-stakes papers but uses more of your allowance.",
+      "Original files — “Remove originals” deletes each unmarked paper from the From folder once it's marked; “Keep for marking” leaves it there so you can re-mark it.",
+      "Mark types — the ticks, crosses and symbols AutoMark stamps, each with its own colour and shape. These are what appear in the margin of marked papers.",
+      "Accent colour — a cosmetic theme colour for the app.",
+      "You can reopen this guide or replay the guided tour any time from Settings, or the “?” button at the top-right.",
     ],
   },
 ];

@@ -76,6 +76,21 @@ export async function pickRoot(): Promise<FileSystemDirectoryHandle> {
   return handle;
 }
 
+/** Open the directory picker WITHOUT persisting it as the root (used by the
+ *  "Create folder structure" flow, where the *created* parent — not the picked
+ *  location — becomes the root). Needs a user gesture. */
+export async function pickDirectory(): Promise<FileSystemDirectoryHandle> {
+  const w = window as unknown as {
+    showDirectoryPicker: (o?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
+  };
+  return w.showDirectoryPicker({ mode: "readwrite" });
+}
+
+/** Persist a directory as the saved root (silently reconnected on next visit). */
+export async function saveRoot(handle: FileSystemDirectoryHandle): Promise<void> {
+  await idbSet(ROOT_KEY, handle);
+}
+
 export async function loadSavedRoot(): Promise<FileSystemDirectoryHandle | null> {
   const handle = await idbGet<FileSystemDirectoryHandle>(ROOT_KEY);
   return handle ?? null;
@@ -153,6 +168,39 @@ export async function createMarkedFolder(parent: FileSystemDirectoryHandle): Pro
   for (let n = 2; await folderExists(parent, name); n++) name = `${base} (${n})`;
   const handle = await parent.getDirectoryHandle(name, { create: true });
   return { name, handle };
+}
+
+// ── The AutoMark folder structure ──────────────────────────────────────────
+// The three fixed folders a fresh user needs, plus the parent that holds them.
+// Names are stable so the app can auto-select From/To after creating them.
+export const STRUCTURE_PARENT = "AutoMark Papers";
+export const STRUCTURE_FROM   = "Documents to mark";
+export const STRUCTURE_TO     = "Marked documents";
+export const STRUCTURE_MEMO   = "Memo";
+
+export interface FolderStructure {
+  root: FileSystemDirectoryHandle; // the created parent (becomes the connected root)
+  rootName: string;
+  fromName: string;                // = STRUCTURE_FROM
+  toName: string;                  // = STRUCTURE_TO
+  memoName: string;                // = STRUCTURE_MEMO
+}
+
+/**
+ * Build the full AutoMark folder structure inside `location`: a versioned parent
+ * ("AutoMark Papers", "AutoMark Papers (2)", …) containing three subfolders —
+ * "Documents to mark", "Marked documents", and "Memo". The parent is returned as
+ * the new root so the caller can adopt it and auto-select From/To. This is the
+ * one-click setup for users who don't want to arrange folders themselves.
+ */
+export async function createFolderStructure(location: FileSystemDirectoryHandle): Promise<FolderStructure> {
+  let name = STRUCTURE_PARENT;
+  for (let n = 2; await folderExists(location, name); n++) name = `${STRUCTURE_PARENT} (${n})`;
+  const root = await location.getDirectoryHandle(name, { create: true });
+  await root.getDirectoryHandle(STRUCTURE_FROM, { create: true });
+  await root.getDirectoryHandle(STRUCTURE_TO,   { create: true });
+  await root.getDirectoryHandle(STRUCTURE_MEMO, { create: true });
+  return { root, rootName: name, fromName: STRUCTURE_FROM, toName: STRUCTURE_TO, memoName: STRUCTURE_MEMO };
 }
 
 /**

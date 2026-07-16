@@ -78,18 +78,24 @@ export default function GuidedTour({ steps, active, onFinish }: Props) {
     : null;
 
   return (
-    <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true" aria-label="Guided tour">
+    // pointer-events-none on the container so clicks fall THROUGH the spotlight hole
+    // to the real control underneath — the user can actually connect a folder, open
+    // a select, etc. while the tour is up. The dimming panels and tooltip below
+    // re-enable pointer events only where we want them (panels block, tooltip works).
+    <div className="fixed inset-0 z-[60] pointer-events-none" role="dialog" aria-modal="true" aria-label="Guided tour">
       {rect ? (
         <>
-          {/* Four dimming panels around the target — the target itself is left clear */}
-          <div className="fixed left-0 right-0 top-0 bg-black/55" style={{ height: Math.max(0, rect.top - PAD) }} />
-          <div className="fixed left-0 right-0 bg-black/55" style={{ top: rect.top + rect.height + PAD, bottom: 0 }} />
+          {/* Four dimming panels around the target — the target itself is left clear
+              and clickable. Panels capture clicks (pointer-events-auto) so clicking
+              the dimmed area doesn't accidentally hit the page behind it. */}
+          <div className="fixed left-0 right-0 top-0 bg-black/55 pointer-events-auto" style={{ height: Math.max(0, rect.top - PAD) }} />
+          <div className="fixed left-0 right-0 bg-black/55 pointer-events-auto" style={{ top: rect.top + rect.height + PAD, bottom: 0 }} />
           <div
-            className="fixed left-0 bg-black/55"
+            className="fixed left-0 bg-black/55 pointer-events-auto"
             style={{ top: Math.max(0, rect.top - PAD), height: rect.height + PAD * 2, width: Math.max(0, rect.left - PAD) }}
           />
           <div
-            className="fixed right-0 bg-black/55"
+            className="fixed right-0 bg-black/55 pointer-events-auto"
             style={{ top: Math.max(0, rect.top - PAD), height: rect.height + PAD * 2, left: rect.left + rect.width + PAD }}
           />
           <div
@@ -98,11 +104,11 @@ export default function GuidedTour({ steps, active, onFinish }: Props) {
           />
         </>
       ) : (
-        <div className="fixed inset-0 bg-black/55" />
+        <div className="fixed inset-0 bg-black/55 pointer-events-auto" />
       )}
 
       <div
-        className="fixed z-[61] bg-white rounded-2xl border border-slate-200 shadow-xl p-5"
+        className="fixed z-[61] bg-white rounded-2xl border border-slate-200 shadow-xl p-5 pointer-events-auto"
         style={
           rect
             ? { top: tooltipTop ?? 0, left: Math.min(Math.max(PAD, rect.left), viewportW - TOOLTIP_WIDTH - PAD), width: TOOLTIP_WIDTH }
