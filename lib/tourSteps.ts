@@ -16,7 +16,7 @@ export const TOUR_STEPS: TourStep[] = [
     target: "connect",
     title: "Connect your folder",
     body:
-      "AutoMark reads and writes a folder on your computer. For it to work, that folder should be laid out like this — three folders inside one:",
+      "AutoMark reads and writes a folder on your computer. For it to work, that folder should be laid out like this — three folders inside one. If you’re unsure or don’t have this yet, don’t worry — just follow step 2.",
     visual: "folders",
   },
   {
