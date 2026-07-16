@@ -38,6 +38,9 @@ import { hasFenceCollision, type Annotation } from "@/lib/markingPrompt";
 
 type MarkMode = "instant" | "batch";
 
+// How many documents the From-folder list shows before the "Show all" toggle.
+const FILE_PREVIEW_COUNT = 3;
+
 // Developer contact shown in the generic fallback error (P3-8).
 const DEV_CONTACT_EMAIL = "bernardmanne3@gmail.com";
 const GENERIC_ERROR =
@@ -202,6 +205,7 @@ export default function Home() {
   const [fromName, setFromName] = useState<string | null>(null);
   const [toName, setToName]     = useState<string | null>(null);
   const [files, setFiles]       = useState<FileEntry[]>([]);
+  const [showAllFiles, setShowAllFiles] = useState(false);
 
   // Memo archive
   const [memos, setMemos]                 = useState<Memo[]>([]);
@@ -356,6 +360,7 @@ export default function Home() {
 
   // Load documents whenever the "From" folder changes
   useEffect(() => {
+    setShowAllFiles(false); // collapse the list back to a preview on folder switch
     (async () => {
       const folder = folders.find((f) => f.name === fromName);
       if (!folder) { setFiles([]); return; }
@@ -1020,19 +1025,37 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Document list in the From folder */}
+                  {/* Document list in the From folder. Only the first few show by
+                      default so a 100-file folder doesn't force a long scroll; the
+                      Show all / Show less toggle sits ABOVE the list so it never
+                      "runs away" down the page when expanded. */}
                   <div>
-                    <p className="text-[12px] font-medium text-slate-500 mb-2">
-                      Documents in {fromName ? `“${fromName}”` : "the selected folder"}
-                      {fromFolder && ` (${files.length})`}
-                    </p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[12px] font-medium text-slate-500">
+                        Documents in {fromName ? `“${fromName}”` : "the selected folder"}
+                        {fromFolder && ` (${files.length})`}
+                      </p>
+                      {fromFolder && files.length > FILE_PREVIEW_COUNT && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllFiles((v) => !v)}
+                          aria-expanded={showAllFiles}
+                          className="flex items-center gap-1 text-[12px] font-medium text-[var(--accent-600)] hover:text-[var(--accent-700)] transition-colors shrink-0"
+                        >
+                          {showAllFiles ? "Show less" : `Show all ${files.length}`}
+                          <svg className={`w-3.5 h-3.5 transition-transform ${showAllFiles ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                     {!fromFolder ? (
                       <p className="text-[13px] text-slate-400">Pick a “From” folder to see its documents.</p>
                     ) : files.length === 0 ? (
                       <p className="text-[13px] text-slate-400">This folder has no documents.</p>
                     ) : (
-                      <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
-                        {files.map((f) => (
+                      <div className={`flex flex-col gap-1.5 ${showAllFiles ? "max-h-56 overflow-y-auto" : ""}`}>
+                        {(showAllFiles ? files : files.slice(0, FILE_PREVIEW_COUNT)).map((f) => (
                           <div key={f.name} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 text-[13px] text-slate-700">
                             <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -1040,6 +1063,11 @@ export default function Home() {
                             <span className="truncate">{f.name}</span>
                           </div>
                         ))}
+                        {!showAllFiles && files.length > FILE_PREVIEW_COUNT && (
+                          <p className="text-[12px] text-slate-400 px-3 pt-0.5">
+                            + {files.length - FILE_PREVIEW_COUNT} more — use “Show all {files.length}” above.
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>
