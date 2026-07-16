@@ -16,15 +16,15 @@ import { hasSeenOnboarding, markOnboardingSeen } from "@/lib/onboarding";
 import { TOUR_STEPS } from "@/lib/tourSteps";
 import {
   type Folder,
-  type FileEntry,
   isSupported,
   pickRoot,
   loadSavedRoot,
   hasPermission,
   ensurePermission,
   listFolders,
-  listFiles,
   writeFile,
+  writeFileNested,
+  isDirEmpty,
   uniqueName,
   getProblematicFolder,
   pickFile,
@@ -32,6 +32,7 @@ import {
   saveRoot,
   createFolderStructure,
 } from "@/lib/fileSystem";
+import { collectDocs, type Doc } from "@/lib/collectDocs";
 import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
 import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
 import { hasFenceCollision, type Annotation } from "@/lib/markingPrompt";
@@ -123,16 +124,20 @@ interface BatchResult {
   quarantined?: boolean;   // refused + moved to "Problematic papers" (P5-1)
 }
 
-// P2-8: AutoMark only ever touches PDFs. Non-PDFs are left untouched in the From
-// folder and listed as "skipped" — we never move files the user didn't ask us to mark.
-function recordSkipped(others: FileEntry[], done: BatchResult[]) {
-  for (const e of others) done.push({ name: e.name, total: 0, available: 0, percentage: 0, skipped: true });
+// P2-8: AutoMark only ever touches PDFs. Non-PDFs are left untouched (wherever
+// they sit in the From tree) and listed as "skipped" — we never move files the
+// user didn't ask us to mark.
+function recordSkipped(others: Doc[], done: BatchResult[]) {
+  for (const e of others) done.push({ name: e.path, total: 0, available: 0, percentage: 0, skipped: true });
 }
 
 // A PDF prepared for marking (pages extracted), carried through the batch/chunk loop.
+// `path` is its location relative to the From folder (mirrored into the To folder);
+// `remove` deletes the original once marked (undefined for papers from inside a zip).
 interface PreparedDoc {
   customId: string;
-  name: string;
+  path: string;
+  remove?: () => Promise<void>;
   original: Uint8Array;
   pages: PageContent[];
 }
@@ -172,7 +177,7 @@ interface ChunkCtx {
   from: Folder;
   to: Folder;
   prepared: PreparedDoc[];   // unmarked PDFs, in submission order
-  others: FileEntry[];       // non-PDFs, left in place and reported as skipped (P2-8)
+  others: Doc[];             // non-PDFs, left in place and reported as skipped (P2-8)
   quarantined: BatchResult[]; // papers refused for injection during prep (P5-1)
   quality: "standard" | "high";
   totalDocs: number;
@@ -204,7 +209,12 @@ export default function Home() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [fromName, setFromName] = useState<string | null>(null);
   const [toName, setToName]     = useState<string | null>(null);
-  const [files, setFiles]       = useState<FileEntry[]>([]);
+  // Markable PDFs found in the From folder — recursively, and expanded out of any
+  // zip inside it (see lib/collectDocs.ts). `others` are non-PDF files left in place.
+  const [docs, setDocs]         = useState<Doc[]>([]);
+  const [others, setOthers]     = useState<Doc[]>([]);
+  const [zipCount, setZipCount] = useState(0);
+  const [scanning, setScanning] = useState(false);
   const [showAllFiles, setShowAllFiles] = useState(false);
 
   // Memo archive
@@ -344,7 +354,9 @@ export default function Home() {
       setFolders(await listFolders(handle));
       setFromName(null);
       setToName(null);
-      setFiles([]);
+      setDocs([]);
+      setOthers([]);
+      setZipCount(0);
       setAutoStructure(false);
     } catch (e: unknown) {
       // User cancelling the picker throws — ignore that case quietly
@@ -358,25 +370,38 @@ export default function Home() {
     }
   }, []);
 
-  // Load documents whenever the "From" folder changes
+  // Collect markable documents from the connected From folder — recursively, and
+  // expanding any zip inside it. Kept in one place so the effect, post-run refresh,
+  // and error recovery all reload the list the same way.
+  async function loadDocsFrom(folder: FileSystemDirectoryHandle) {
+    const c = await collectDocs(folder);
+    setDocs(c.docs);
+    setOthers(c.others);
+    setZipCount(c.zipCount);
+  }
+
+  // Load documents whenever the "From" folder changes. Scanning can take a moment
+  // when a large zip has to be read, so we show a "scanning" state meanwhile.
   useEffect(() => {
     setShowAllFiles(false); // collapse the list back to a preview on folder switch
-    (async () => {
-      const folder = folders.find((f) => f.name === fromName);
-      if (!folder) { setFiles([]); return; }
-      setFiles(await listFiles(folder.handle));
-    })().catch((e) => {
-      const msg = e instanceof Error ? e.message : "Could not read folder.";
-      const fe = friendlyError(msg);
-      setError(fe.message);
-      if (!fe.recognized) reportError(msg, "list-files");
-    });
+    const folder = folders.find((f) => f.name === fromName);
+    if (!folder) { setDocs([]); setOthers([]); setZipCount(0); return; }
+    setScanning(true);
+    loadDocsFrom(folder.handle)
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : "Could not read folder.";
+        const fe = friendlyError(msg);
+        setError(fe.message);
+        if (!fe.recognized) reportError(msg, "list-files");
+        setDocs([]); setOthers([]); setZipCount(0);
+      })
+      .finally(() => setScanning(false));
   }, [fromName, folders]);
 
   const fromFolder = folders.find((f) => f.name === fromName);
   const toFolder   = folders.find((f) => f.name === toName);
   // Single-flight (C10): no new run while busy OR while the chunk dialog is open.
-  const canMark    = !!fromFolder && !!toFolder && fromName !== toName && files.length > 0 && !busy && !chunkCtx;
+  const canMark    = !!fromFolder && !!toFolder && fromName !== toName && docs.length > 0 && !busy && !chunkCtx && !scanning;
 
   // "Create folder structure" (sidebar): the user picks WHERE, and we build the
   // full AutoMark layout there — a parent folder containing "Documents to mark",
@@ -462,13 +487,13 @@ export default function Home() {
     if (!fromFolder || !toFolder || !canMark) return;
 
     // The destination must start empty, so a run can never mix marked papers in
-    // with — or silently overwrite — files that are already there.
-    const existing = await listFiles(toFolder.handle).catch(() => [] as FileEntry[]);
-    if (existing.length > 0) {
+    // with — or silently overwrite — files that are already there. Marked output
+    // can nest (mirroring the source), so we check for ANY entry, not just files.
+    const empty = await isDirEmpty(toFolder.handle).catch(() => true);
+    if (!empty) {
       setError(
-        `The destination folder “${toName}” isn’t empty — it already contains ${existing.length} ` +
-          `file${existing.length === 1 ? "" : "s"}. Empty it (or pick an empty folder) before marking, ` +
-          `so marked papers don’t mix with or overwrite what’s already there.`
+        `The destination folder “${toName}” isn’t empty. Empty it (or pick an empty folder) before ` +
+          `marking, so marked papers don’t mix with or overwrite what’s already there.`
       );
       return;
     }
@@ -487,7 +512,7 @@ export default function Home() {
       const fe = friendlyError(msg);
       setError(fe.message);
       if (!fe.recognized) reportError(msg, "marking");
-      setFiles(await listFiles(fromFolder.handle).catch(() => files));
+      await loadDocsFrom(fromFolder.handle).catch(() => {});
     } finally {
       setBusy(false);
       setProgress(null);
@@ -501,44 +526,42 @@ export default function Home() {
   // a parameter so the same quarantine path can be reused for other reasons later.
   async function quarantinePaper(
     from: Folder,
+    doc: Doc,
     original: Uint8Array,
-    name: string,
     reason = "attempted prompt injection",
   ): Promise<BatchResult> {
     const parent = root ?? from.handle;
     const folder = await getProblematicFolder(parent);
-    const qname  = await uniqueName(folder.handle, name.replace(/\.pdf$/i, "") + ` (${reason}).pdf`);
+    const base   = doc.path.split("/").pop() ?? doc.path;
+    const qname  = await uniqueName(folder.handle, base.replace(/\.pdf$/i, "") + ` (${reason}).pdf`);
     await writeFile(folder.handle, qname, original);
-    await from.handle.removeEntry(name);
+    await doc.remove?.(); // no-op for papers that came from inside a zip
     return { name: qname, total: 0, available: 0, percentage: 0, quarantined: true };
   }
 
   // ── Instant: mark each paper synchronously ───────────────────────────────
   async function runInstant(from: Folder, to: Folder) {
-    const batch = [...files];
+    const batch = [...docs];
+    const extra = [...others];
     const done: BatchResult[] = [];
     for (let i = 0; i < batch.length; i++) {
-      const entry = batch[i];
-      setProgress(`Marking ${i + 1} of ${batch.length}: ${entry.name}`);
+      const doc = batch[i];
+      setProgress(`Marking ${i + 1} of ${batch.length}: ${doc.path}`);
       try {
-        if (entry.name.toLowerCase().endsWith(".pdf")) {
-          const file     = await entry.handle.getFile();
-          const prepared = await preparePaper(file);
-          // P5-1: refuse + quarantine a paper trying to forge the wrapper, before
-          // anything is sent to the model.
-          if (hasFenceCollision(prepared.pages)) {
-            done.push(await quarantinePaper(from, prepared.original, entry.name));
-            continue;
-          }
-          const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality, settings.feedback);
-          const marked  = await uniqueName(to.handle, entry.name.replace(/\.pdf$/i, "") + " (marked).pdf");
-          await writeFile(to.handle, marked, outcome.bytes);
-          if (!settings.keepOriginals) await from.handle.removeEntry(entry.name);
-          done.push({ name: marked, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
-        } else {
-          // Not a PDF → leave it where it is and report it (P2-8).
-          done.push({ name: entry.name, total: 0, available: 0, percentage: 0, skipped: true });
+        const file     = await doc.getFile();
+        const prepared = await preparePaper(file);
+        // P5-1: refuse + quarantine a paper trying to forge the wrapper, before
+        // anything is sent to the model.
+        if (hasFenceCollision(prepared.pages)) {
+          done.push(await quarantinePaper(from, doc, prepared.original));
+          continue;
         }
+        const outcome = await markInstant(prepared, memoText, subject, strictness, settings.markTypes, settings.markingQuality, settings.feedback);
+        // Mirror the source path into the To folder, appending " (marked)" before
+        // ".pdf" — this preserves any Moodle student-identifier folder/filename.
+        const written = await writeFileNested(to.handle, doc.path.replace(/\.pdf$/i, "") + " (marked).pdf", outcome.bytes);
+        if (!settings.keepOriginals) await doc.remove?.();
+        done.push({ name: written, total: outcome.total, available: outcome.available, percentage: outcome.percentage });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Marking failed.";
         // Plan/auth gate failure → every remaining paper fails too. Abort the run.
@@ -546,9 +569,11 @@ export default function Home() {
         // A failure specific to this paper (bad PDF, truncation, parse error…):
         // record it, leave the original untouched so it can be retried, and
         // keep marking the rest of the batch instead of aborting (P2-3).
-        done.push({ name: entry.name, total: 0, available: 0, percentage: 0, failed: true });
+        done.push({ name: doc.path, total: 0, available: 0, percentage: 0, failed: true });
       }
     }
+    // Non-PDFs are left where they are and reported (P2-8).
+    recordSkipped(extra, done);
     await finish(from, done, "Done");
   }
 
@@ -598,7 +623,6 @@ export default function Home() {
   async function applyChunkResults(
     results: Record<string, MarkResultLike | { error: string }>,
     subset: PreparedDoc[],
-    from: Folder,
     to: Folder,
     done: BatchResult[],
   ) {
@@ -606,12 +630,11 @@ export default function Home() {
     for (const [cid, r] of Object.entries(results)) {
       const p = byId.get(cid);
       if (!p) continue;
-      if ("error" in r) { done.push({ name: p.name, total: 0, available: 0, percentage: 0, failed: true }); continue; }
-      const bytes  = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "", settings.feedback);
-      const marked = await uniqueName(to.handle, p.name.replace(/\.pdf$/i, "") + " (marked).pdf");
-      await writeFile(to.handle, marked, bytes);
-      if (!settings.keepOriginals) await from.handle.removeEntry(p.name);
-      done.push({ name: marked, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
+      if ("error" in r) { done.push({ name: p.path, total: 0, available: 0, percentage: 0, failed: true }); continue; }
+      const bytes   = await stampPaper(p.original, r.annotations ?? [], settings.markTypes, r.total ?? 0, r.available ?? 0, r.summary ?? "", settings.feedback);
+      const written = await writeFileNested(to.handle, p.path.replace(/\.pdf$/i, "") + " (marked).pdf", bytes);
+      if (!settings.keepOriginals) await p.remove?.();
+      done.push({ name: written, total: r.total ?? 0, available: r.available ?? 0, percentage: r.percentage ?? 0 });
     }
   }
 
@@ -619,14 +642,13 @@ export default function Home() {
   // If the whole job fits the allowance it's one batch (no dialog). If it's over
   // budget we pause and offer "Mark in chunks" (P1-4) rather than reject outright.
   async function runBatch(from: Folder, to: Folder) {
-    const batch  = [...files];
-    const pdfs    = batch.filter((e) => e.name.toLowerCase().endsWith(".pdf"));
-    const others = batch.filter((e) => !e.name.toLowerCase().endsWith(".pdf"));
+    const pdfs   = [...docs];
+    const extra  = [...others];
     const done: BatchResult[] = [];
 
     // No PDFs → nothing to mark; the non-PDFs are left in place (P2-8).
     if (pdfs.length === 0) {
-      recordSkipped(others, done);
+      recordSkipped(extra, done);
       await finish(from, done, "Batch done");
       return;
     }
@@ -637,12 +659,12 @@ export default function Home() {
     const quarantined: BatchResult[] = [];
     let usedBytes = 0;
     for (let i = 0; i < pdfs.length; i++) {
-      setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].name}`);
-      const file = await pdfs[i].handle.getFile();
+      setProgress(`Preparing ${i + 1} of ${pdfs.length}: ${pdfs[i].path}`);
+      const file = await pdfs[i].getFile();
       let doc: PreparedDoc;
       try {
         const { original, pages } = await preparePaper(file);
-        doc = { customId: `p${i}`, name: pdfs[i].name, original, pages };
+        doc = { customId: `p${i}`, path: pdfs[i].path, remove: pdfs[i].remove, original, pages };
       } catch (e) {
         // An allocation failure mid-prep (RangeError: array buffer / string too long)
         // means we're already at the ceiling — surface the same friendly guidance.
@@ -652,7 +674,7 @@ export default function Home() {
       // P5-1: a wrapper-forgery attempt is refused and quarantined here — it never
       // enters the batch and is never sent to the model.
       if (hasFenceCollision(doc.pages)) {
-        quarantined.push(await quarantinePaper(from, doc.original, doc.name));
+        quarantined.push(await quarantinePaper(from, pdfs[i], doc.original));
         continue;
       }
       usedBytes += preparedBytes(doc);
@@ -679,16 +701,16 @@ export default function Home() {
       }
       // Offer the choice. handleMark's finally clears `busy`; the modal owns the
       // screen and canMark is disabled while chunkCtx is set (single-flight, C10).
-      setChunkCtx({ from, to, prepared, others, quarantined, quality: settings.markingQuality, totalDocs: prepared.length });
+      setChunkCtx({ from, to, prepared, others: extra, quarantined, quality: settings.markingQuality, totalDocs: prepared.length });
       return;
     }
 
     // Whole job fit → one normal batch. Non-PDFs are left in place (P2-8);
     // quarantined injection attempts are already moved (P5-1).
-    recordSkipped(others, done);
+    recordSkipped(extra, done);
     done.push(...quarantined);
     const { results, recorded } = await pollBatch(probe.batchId, probe.quality);
-    await applyChunkResults(results, prepared, from, to, done);
+    await applyChunkResults(results, prepared, to, done);
     if (!recorded) setError("Your papers are marked, but we couldn’t finish updating your usage just now — it’ll catch up shortly.");
     await finish(from, done, "Batch done");
   }
@@ -750,7 +772,7 @@ export default function Home() {
         // C5: await completion AND the usage record before sizing the next chunk.
         const { results, recorded } = await pollBatch(submitted.batchId, submitted.quality);
         const chunkDocs = remaining.slice(0, chunkSize);
-        await applyChunkResults(results, chunkDocs, from, to, done);
+        await applyChunkResults(results, chunkDocs, to, done);
         remaining = remaining.slice(chunkSize); // C7: advance only after applying
         window.dispatchEvent(new Event("allowance-refresh"));
 
@@ -772,7 +794,7 @@ export default function Home() {
         if (!fe.recognized) reportError(msg, "chunk-loop");
       }
     } finally {
-      setFiles(await listFiles(from.handle).catch(() => files));
+      await loadDocsFrom(from.handle).catch(() => {});
       setResults(done);
       persistResults(done);
       const marked = markedCount(done);
@@ -821,7 +843,7 @@ export default function Home() {
   }
 
   async function finish(from: Folder, done: BatchResult[], verb: string) {
-    setFiles(await listFiles(from.handle));
+    await loadDocsFrom(from.handle);
     setResults(done);
     persistResults(done);
     const marked      = done.filter((d) => !d.skipped && !d.failed && !d.quarantined).length;
@@ -1025,24 +1047,28 @@ export default function Home() {
                     />
                   </div>
 
-                  {/* Document list in the From folder. Only the first few show by
-                      default so a 100-file folder doesn't force a long scroll; the
-                      Show all / Show less toggle sits ABOVE the list so it never
-                      "runs away" down the page when expanded. */}
+                  {/* Document list in the From folder. PDFs are gathered from every
+                      subfolder (any depth) AND from inside any zip in the folder, so
+                      the path is shown rather than just the filename. Only the first
+                      few show by default so a 100-file folder doesn't force a long
+                      scroll; the Show all / Show less toggle sits ABOVE the list. */}
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-[12px] font-medium text-slate-500">
                         Documents in {fromName ? `“${fromName}”` : "the selected folder"}
-                        {fromFolder && ` (${files.length})`}
+                        {fromFolder && !scanning && ` (${docs.length})`}
+                        {fromFolder && zipCount > 0 && !scanning && (
+                          <span className="text-slate-400 font-normal"> · from {zipCount} zip{zipCount === 1 ? "" : "s"} + subfolders</span>
+                        )}
                       </p>
-                      {fromFolder && files.length > FILE_PREVIEW_COUNT && (
+                      {fromFolder && !scanning && docs.length > FILE_PREVIEW_COUNT && (
                         <button
                           type="button"
                           onClick={() => setShowAllFiles((v) => !v)}
                           aria-expanded={showAllFiles}
                           className="flex items-center gap-1 text-[12px] font-medium text-[var(--accent-600)] hover:text-[var(--accent-700)] transition-colors shrink-0"
                         >
-                          {showAllFiles ? "Show less" : `Show all ${files.length}`}
+                          {showAllFiles ? "Show less" : `Show all ${docs.length}`}
                           <svg className={`w-3.5 h-3.5 transition-transform ${showAllFiles ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                           </svg>
@@ -1051,21 +1077,29 @@ export default function Home() {
                     </div>
                     {!fromFolder ? (
                       <p className="text-[13px] text-slate-400">Pick a “From” folder to see its documents.</p>
-                    ) : files.length === 0 ? (
-                      <p className="text-[13px] text-slate-400">This folder has no documents.</p>
+                    ) : scanning ? (
+                      <p className="text-[13px] text-slate-400">Scanning subfolders and any zip files…</p>
+                    ) : docs.length === 0 ? (
+                      <p className="text-[13px] text-slate-400">
+                        No PDFs found here — including in any subfolders or zip files.
+                        {others.length > 0 && ` (${others.length} non-PDF file${others.length === 1 ? "" : "s"} ${others.length === 1 ? "is" : "are"} present and will be left in place.)`}
+                      </p>
                     ) : (
                       <div className={`flex flex-col gap-1.5 ${showAllFiles ? "max-h-56 overflow-y-auto" : ""}`}>
-                        {(showAllFiles ? files : files.slice(0, FILE_PREVIEW_COUNT)).map((f) => (
-                          <div key={f.name} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 text-[13px] text-slate-700">
+                        {(showAllFiles ? docs : docs.slice(0, FILE_PREVIEW_COUNT)).map((d) => (
+                          <div key={d.path} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 text-[13px] text-slate-700">
                             <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
-                            <span className="truncate">{f.name}</span>
+                            <span className="truncate" title={d.path}>{d.path}</span>
+                            {d.fromZip && (
+                              <span className="shrink-0 text-[10px] font-medium text-[var(--accent-600)] bg-[color:var(--accent-50)] px-1.5 py-0.5 rounded">zip</span>
+                            )}
                           </div>
                         ))}
-                        {!showAllFiles && files.length > FILE_PREVIEW_COUNT && (
+                        {!showAllFiles && docs.length > FILE_PREVIEW_COUNT && (
                           <p className="text-[12px] text-slate-400 px-3 pt-0.5">
-                            + {files.length - FILE_PREVIEW_COUNT} more — use “Show all {files.length}” above.
+                            + {docs.length - FILE_PREVIEW_COUNT} more — use “Show all {docs.length}” above.
                           </p>
                         )}
                       </div>
@@ -1152,8 +1186,10 @@ export default function Home() {
                 <span>Mark ▶</span>
                 <span className="text-[13px] font-normal opacity-70">
                   {canMark
-                    ? `Mark ${files.length} paper${files.length === 1 ? "" : "s"} → “${toName}”`
-                    : "Pick a From and To folder"}
+                    ? `Mark ${docs.length} paper${docs.length === 1 ? "" : "s"} → “${toName}”`
+                    : scanning
+                      ? "Scanning your files…"
+                      : "Pick a From and To folder"}
                 </span>
               </>
             )}

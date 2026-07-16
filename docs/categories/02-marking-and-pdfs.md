@@ -119,6 +119,20 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 4. `pollBatch(batchId)`: GET every **5 s**, up to **240 attempts (~20 min)**, until `status === "ended"`; throws a "taking longer than expected" message past that.
 5. For each result: `stampPaper` → write `"(marked).pdf"` → remove original. Per-paper failures are recorded but don't kill the batch.
 
+### 6.2b Input sources — recursion & zips (Moodle round-trip)
+
+The From folder is no longer a flat list. `collectDocs(from)` (`lib/collectDocs.ts`) gathers markable PDFs by **walking every subfolder to any depth** *and* **expanding any `.zip` inside it** (browser-side, via `jszip`). This is what lets a lecturer drop a Moodle **"Download all submissions"** archive straight into the From folder, or keep papers nested per class/student, and have everything marked.
+
+Each PDF becomes a `Doc { path, getFile, remove?, fromZip }`:
+- **`path`** is relative to the From folder (`"classA/essay.pdf"`, or `"<zipbase>/student1_123_.../essay.pdf"` for zip contents). Marked output **mirrors this path** into the To folder via `writeFileNested` — so a Moodle "download in folders" student-identifier structure survives intact and the To folder can be re-zipped and uploaded back through **"Upload multiple feedback files in a zip"**. The `" (marked)"` suffix is appended *before* `.pdf`, keeping the identifier Moodle matches on.
+- **`getFile`** is lazy (disk handle or zip entry) so instant marking doesn't hold every file in memory; zip entries are decompressed only when marked.
+- **`remove`** deletes the disk original after a successful mark; it is **undefined for zip entries** — AutoMark never mutates the user's downloaded zip (so `keepOriginals` is effectively always on for zip papers).
+- AutoMark's own output folders (`"Marked …"`, `"Problematic papers"`) are **skipped** during the walk, so pointing From at the workspace root can't re-mark prior output.
+
+Non-PDF disk files anywhere in the tree are collected as `others` and reported as skipped (P2-8); non-PDF entries inside a zip are ignored silently.
+
+> **Not yet built:** auto-zipping the To folder for upload (the user zips it themselves today), and selecting a bare `.zip` via a file picker instead of dropping it in the From folder. The full Moodle **Web Services API** path (token auth, auto pull/push) is a separate, larger effort — see the Moodle integration notes.
+
 ### 6.3 Output naming & side effects
 - Marked file: `"<original name without .pdf> (marked).pdf"`, run through `uniqueName()` so a name collision is **versioned** (`"… (marked) (2).pdf"`) instead of overwriting (P2-1).
 - The original is **deleted from From** after a successful write — **unless** the `keepOriginals` setting ("Keep for marking") is on, in which case the unmarked original stays put (P2-1).
@@ -135,7 +149,8 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 
 | Concern | Mechanism | File |
 |---|---|---|
-| Folder access | File System Access API (`showDirectoryPicker`, read/write) | `lib/fileSystem.ts` |
+| Document collection | Recursive folder walk + in-browser zip expansion (`jszip`) → `Doc[]` | `lib/collectDocs.ts` |
+| Folder access | File System Access API (`showDirectoryPicker`, read/write, `writeFileNested` for mirrored output) | `lib/fileSystem.ts` |
 | Folder handle persistence | IndexedDB `automark-fs` / `handles` / `root` | `lib/fileSystem.ts` |
 | Memo archive | IndexedDB `automark-memos` / `memos` (text + original blob) | `lib/memoArchive.ts` |
 | Permission model | `queryPermission` (silent, on mount) vs `ensurePermission` (needs user gesture) | `lib/fileSystem.ts` |
@@ -178,6 +193,7 @@ Sequential loop over files. For each PDF: `markInstant()` (prepare → POST `/ap
 
 | File | Role |
 |------|------|
+| `lib/collectDocs.ts` | `collectDocs` — recurse subfolders + expand zips into a flat `Doc[]` of PDFs to mark |
 | `lib/markPaper.ts` | `preparePaper` (extract), `stampPaper` (draw), `markInstant`, `extractMemoText` |
 | `lib/markingPrompt.ts` | `MODELS`, `PageContent`/`Annotation` types, `buildSystem`/`buildContent`, `parseMarkResponse`, (unused) `mockResult` |
 | `lib/fileSystem.ts` | File System Access API + IndexedDB folder handles; move/write/read |

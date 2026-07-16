@@ -260,6 +260,38 @@ export async function writeFile(
   await writable.close();
 }
 
+/**
+ * Write bytes to a "/"-separated relative path under `root`, creating any
+ * intermediate subfolders. Used so marked output can MIRROR the source layout
+ * (nested folders / expanded-zip structure) into the destination — which keeps
+ * a Moodle "download in folders" student-identifier structure intact so the
+ * result can be re-zipped and uploaded back. The final filename is de-duped with
+ * `uniqueName` within its own subfolder; the actual relative path written
+ * (including any " (2)" suffix) is returned for reporting.
+ */
+export async function writeFileNested(
+  root: FileSystemDirectoryHandle,
+  relPath: string,
+  data: WriteData
+): Promise<string> {
+  const parts    = relPath.split("/").filter(Boolean);
+  const fileName = parts.pop() ?? relPath;
+  let dir = root;
+  for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
+  const finalName = await uniqueName(dir, fileName);
+  await writeFile(dir, finalName, data);
+  return [...parts, finalName].join("/");
+}
+
+/** True if `dir` contains no entries at all (files or subfolders). */
+export async function isDirEmpty(dir: FileSystemDirectoryHandle): Promise<boolean> {
+  for await (const _entry of (dir as unknown as DirIter).entries()) {
+    void _entry;
+    return false;
+  }
+  return true;
+}
+
 /** Read a single file from the From folder as a File object. */
 export async function readFile(
   dir: FileSystemDirectoryHandle,
