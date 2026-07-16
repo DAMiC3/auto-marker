@@ -11,12 +11,22 @@ const SECTIONS: { title: string; points: string[] }[] = [
     ],
   },
   {
+    title: "Supported files & your data",
+    points: [
+      "Typed PDFs work best and cost the least — the text is read directly, so marks land right next to each answer.",
+      "Scanned or photographed pages still work, but they're sent as images: they use more allowance and mark placement is less precise.",
+      "Handwritten answers aren't supported — AutoMark is built for typed university tests.",
+      "Your PDF files are never uploaded. AutoMark reads and writes them directly in the folder you choose; only the extracted text (or, for a scan, a page image) is sent to the AI over a secure connection to do the marking.",
+    ],
+  },
+  {
     title: "Getting your memo right",
     points: [
       "The more specific your memo, the more accurate the marking — write it like you would for a human marker.",
       "Include worked examples for calculation questions, not just final answers.",
       "Spell out partial-mark criteria explicitly — e.g. \"1 mark for the correct formula, 1 for correct substitution, 1 for the final answer.\"",
       "A typed or exported memo works far better than a photographed one — scanned memos aren't read for text.",
+      "Keep the memo out of your \"to mark\" folder, or AutoMark will try to mark it as a paper.",
     ],
   },
   {
@@ -47,8 +57,7 @@ const SECTIONS: { title: string; points: string[] }[] = [
     title: "Keeping things organised",
     points: [
       "Consistent file names (e.g. including the student number) make results easier to sort and match up afterwards.",
-      "Keep your memo out of the \"From\" folder — otherwise AutoMark will try to mark it too.",
-      "If marks look wrong on a re-run, tighten the memo's wording rather than just raising strictness.",
+      "Marked copies are saved as \"<name> (marked).pdf\" in your To folder, so they're easy to spot next to the originals.",
     ],
   },
   {
@@ -62,6 +71,16 @@ const SECTIONS: { title: string; points: string[] }[] = [
       "Mark types — the ticks, crosses and symbols AutoMark stamps, each with its own colour and shape. These are what appear in the margin of marked papers.",
       "Accent colour — a cosmetic theme colour for the app.",
       "You can reopen this guide or replay the guided tour any time from Settings, or the “?” button at the top-right.",
+    ],
+  },
+  {
+    title: "Troubleshooting & FAQ",
+    points: [
+      "Marks look wrong? Tighten the memo's wording and partial-mark criteria before reaching for higher strictness — most inconsistencies trace back to a vague memo.",
+      "Ran out of allowance mid-batch? Marking stops on its own: the papers already marked are saved, and the rest stay untouched in your From folder until you renew.",
+      "No folder picker, or “can't access this folder”? AutoMark needs Chrome or Edge on a computer — direct folder access isn't available in Firefox, Safari, or on mobile.",
+      "A paper wasn't marked? It's left in your From folder so you can retry it. A paper that appears to be trying to trick the marker is moved to a “Problematic papers” folder and skipped.",
+      "Where did my papers go? Marked copies go to your To folder; the originals are removed from the From folder unless you chose “Keep for marking” in Settings.",
     ],
   },
 ];
