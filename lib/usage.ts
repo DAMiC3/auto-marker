@@ -5,6 +5,7 @@
 import { createServiceClient, isServiceConfigured } from "@/lib/supabase/service";
 import { createClient as createUserClient } from "@/lib/supabase/server";
 import { BATCH_RATES, USD_TO_ZAR } from "@/lib/cost";
+import { MAX_BATCH_DOCS } from "@/lib/markingPrompt";
 import { blockReason, type AllowanceState } from "@/lib/allowance";
 import { enqueuePendingUsage, drainPendingUsage } from "@/lib/pendingUsage";
 import { notifyOps } from "@/lib/notify";
@@ -60,7 +61,9 @@ export function estimateBatchCostZar(papers: PaperPageSummary[], quality: "stand
 // Hard ceiling on documents in a single batch submission (P1-4 / safety rule C15).
 // Caps the blast radius of any single estimate miss. Enforced server-side in the
 // batch route, not just the client loop, so a buggy/hostile client can't bypass it.
-export const MAX_BATCH_DOCS = 100;
+// Defined in lib/markingPrompt (client+server-shared) so the client chunk loop can
+// match it; re-exported here for existing server-side importers.
+export { MAX_BATCH_DOCS };
 
 // How many of the LEADING documents fit within `remainingZar` by the (conservative)
 // pre-flight estimate, capped at MAX_BATCH_DOCS. Documents are atomic — whole papers,
@@ -114,8 +117,19 @@ function errMsg(e: unknown): string {
 // failures (not the normal over-limit case) also page ops via notifyOps so a silent
 // outage that's turning users away gets noticed.
 export async function checkAllowance(): Promise<AllowanceCheck> {
-  // Unmetered deployment (local/dev with no service key): nothing to enforce.
   if (!isServiceConfigured()) {
+    // In PRODUCTION, a missing/broken metering config (e.g. the Supabase service
+    // key never got set, or was removed) must NOT silently hand out free, unmetered
+    // marking. Fail CLOSED and page ops — same posture as a verification failure.
+    // Locally (`next dev`, NODE_ENV !== "production") keep the unmetered convenience
+    // so the app still runs without secrets. (Owner decision, 2026-07-18.)
+    if (process.env.NODE_ENV === "production") {
+      await notifyOps(
+        "CRITICAL: metering not configured in production — marking BLOCKED (SUPABASE service URL/role key missing or unreadable).",
+      );
+      return { allowed: false, status: 503, error: "verification_failed" };
+    }
+    // Unmetered deployment (local/dev with no service key): nothing to enforce.
     return { allowed: true, userId: null, profile: null };
   }
 

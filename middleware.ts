@@ -12,13 +12,16 @@ const PUBLIC_PREFIXES = ["/login", "/auth"];
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Static assets / PWA files — always allow
+  // Static assets / PWA files — always allow. `/api/health` is here too so an
+  // EXTERNAL uptime monitor gets a clean 200 without an auth redirect, and the
+  // liveness probe never touches Supabase (it reflects Worker/hosting up only).
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icon") ||
     pathname === "/manifest.json" ||
     pathname === "/sw.js" ||
-    pathname === "/favicon.ico"
+    pathname === "/favicon.ico" ||
+    pathname === "/api/health"
   ) {
     return NextResponse.next();
   }

@@ -101,6 +101,7 @@ Reverse later with `Remove-MpPreference -ExclusionPath "C:\Users\Michael Bernard
 
 - `docs/categories/README.md` — **the system split into 7 categories** (Payments & Enforcement, Marking & PDFs, UI, Error Handling, AI, DB & Hosting, Auth & Onboarding). Category 1 is fully documented; the rest are scaffolds. Update a category's doc whenever you change its code.
 - `docs/HANDOVER.md` — full state, architecture, gotchas, open items
+- `docs/risk-register.md` — **consolidated known risks** (scaling ceilings, outage behaviour, product/security/legal gaps, paygate surface); review here first
 - `docs/adr-001-marking-ai-provider.md` — AI provider decision
 - `docs/adr-002-pricing-and-plans.md` — pricing model (Accepted)
 - `docs/cost-and-pricing-notes.md` — cost reasoning

@@ -36,7 +36,7 @@ import { collectDocs, type Doc } from "@/lib/collectDocs";
 import { createZipSink, markedLeaf, type ZipSink } from "@/lib/markedZip";
 import { markInstant, preparePaper, stampPaper, extractMemoText, type PageContent } from "@/lib/markPaper";
 import { type Memo, listMemos, saveMemo, deleteMemo } from "@/lib/memoArchive";
-import { hasFenceCollision, type Annotation } from "@/lib/markingPrompt";
+import { hasFenceCollision, MAX_BATCH_DOCS, type Annotation } from "@/lib/markingPrompt";
 
 type MarkMode = "instant" | "batch";
 
@@ -206,6 +206,10 @@ interface ChunkCtx {
   quarantined: BatchResult[]; // papers refused for injection during prep (P5-1)
   quality: "standard" | "high";
   totalDocs: number;
+  // Why we're chunking: "count" = more than MAX_BATCH_DOCS papers (must split
+  // regardless of budget); "budget" = fits in one batch by count but over the
+  // allowance. Drives the dialog copy. The loop enforces BOTH limits either way.
+  reason: "budget" | "count";
 }
 
 // Outcome of a single batch-submit attempt.
@@ -343,6 +347,16 @@ export default function Home() {
     const t = setTimeout(() => setError(null), 15000);
     return () => clearTimeout(t);
   }, [error]);
+
+  // Warn before leaving while a marking run is in progress (C11). Closing the tab
+  // mid-batch abandons the in-flight chunk — the browser's native "Leave site?"
+  // prompt gives the user a chance to stay. Armed only while `busy`.
+  useEffect(() => {
+    if (!busy) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [busy]);
 
   // Persist / clear the Results card across refreshes (P3-5).
   function persistResults(done: BatchResult[]) {
@@ -720,8 +734,18 @@ export default function Home() {
       prepared.push(doc);
     }
 
-    // Probe the whole job. On an over-budget result the route creates NO batch —
-    // it rejects at the estimate gate, so nothing is charged and nothing is moved yet.
+    // More papers than a single batch can hold → it can never be one submission, so
+    // hand straight to the chunk loop (the same "Mark in chunks" flow the allowance
+    // overflow uses). We do NOT probe here: a probe that "fit" would create a batch
+    // for only the first slice that we'd then have to discard. The loop submits in
+    // ≤ MAX_BATCH_DOCS chunks and still checks each chunk against the budget.
+    if (prepared.length > MAX_BATCH_DOCS) {
+      setChunkCtx({ from, to, prepared, others: extra, quarantined, quality: settings.markingQuality, totalDocs: prepared.length, reason: "count" });
+      return;
+    }
+
+    // Probe the whole job (≤ MAX_BATCH_DOCS). On an over-budget result the route
+    // creates NO batch — it rejects at the estimate gate, so nothing is charged/moved.
     setProgress("Checking your allowance…");
     const probe = await submitWithRetry(prepared, settings.markingQuality);
 
@@ -735,7 +759,7 @@ export default function Home() {
       }
       // Offer the choice. handleMark's finally clears `busy`; the modal owns the
       // screen and canMark is disabled while chunkCtx is set (single-flight, C10).
-      setChunkCtx({ from, to, prepared, others: extra, quarantined, quality: settings.markingQuality, totalDocs: prepared.length });
+      setChunkCtx({ from, to, prepared, others: extra, quarantined, quality: settings.markingQuality, totalDocs: prepared.length, reason: "budget" });
       return;
     }
 
@@ -785,17 +809,22 @@ export default function Home() {
 
         setProgress(`Marking… ${markedCount(done)} of ${ctx.totalDocs} documents done`);
 
-        // Ask how many of the remaining docs fit right now.
-        const probe = await submitWithRetry(remaining, quality);
+        // Never submit more than the server's per-batch ceiling (C15). Capping the
+        // probe at MAX_BATCH_DOCS is what lets this one loop handle a PDF-count
+        // overload (>100) the SAME way it handles an allowance overload — and every
+        // chunk is still sized against the live budget below.
+        const want = Math.min(MAX_BATCH_DOCS, remaining.length);
+        // Ask how many of the next `want` docs fit the allowance right now.
+        const probe = await submitWithRetry(remaining.slice(0, want), quality);
         let submitted: { batchId: string; quality: string };
         let chunkSize: number;
 
         if (probe.kind === "submitted") {
           submitted = probe;
-          chunkSize = remaining.length;
+          chunkSize = want;
         } else if (probe.kind === "over") {
           if (probe.affordable <= 0) { setError(friendlyError("allowance_exhausted").message); break; } // C1 stop
-          chunkSize = probe.affordable;
+          chunkSize = Math.min(want, probe.affordable); // both limits: ≤100 AND ≤ what the budget covers
           const sub = await submitWithRetry(remaining.slice(0, chunkSize), quality);
           if (sub.kind !== "submitted") {
             if (sub.kind === "over") { setError(friendlyError("allowance_exhausted").message); break; }
@@ -1296,11 +1325,27 @@ export default function Home() {
       {chunkCtx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6">
-            <h2 className="text-[17px] font-semibold text-slate-900">This batch is over your spending limit</h2>
+            <h2 className="text-[17px] font-semibold text-slate-900">
+              {chunkCtx.reason === "count"
+                ? `This batch has more than ${MAX_BATCH_DOCS} papers`
+                : "This batch is over your spending limit"}
+            </h2>
             <p className="text-[14px] text-slate-600 mt-2">
-              We estimate this run of{" "}
-              <strong>{chunkCtx.totalDocs} document{chunkCtx.totalDocs === 1 ? "" : "s"}</strong>{" "}
-              is more than your plan can mark right now.
+              {chunkCtx.reason === "count" ? (
+                <>
+                  We mark up to <strong>{MAX_BATCH_DOCS}</strong> papers per batch, so this run of{" "}
+                  <strong>{chunkCtx.totalDocs} document{chunkCtx.totalDocs === 1 ? "" : "s"}</strong>{" "}
+                  will be marked in chunks — automatically, one batch after another. If you’re also
+                  near your plan limit, marking stops when the allowance runs out and the rest stay
+                  in “{fromName}”.
+                </>
+              ) : (
+                <>
+                  We estimate this run of{" "}
+                  <strong>{chunkCtx.totalDocs} document{chunkCtx.totalDocs === 1 ? "" : "s"}</strong>{" "}
+                  is more than your plan can mark right now.
+                </>
+              )}
             </p>
 
             <div className="mt-5 flex flex-col gap-2.5">
@@ -1314,7 +1359,7 @@ export default function Home() {
                 onClick={cancelChunk}
                 className="w-full rounded-xl py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[14px] font-medium transition-colors"
               >
-                Remove some documents
+                {chunkCtx.reason === "count" ? "Cancel" : "Remove some documents"}
               </button>
             </div>
 
@@ -1330,9 +1375,9 @@ export default function Home() {
             </button>
             {chunkInfo && (
               <p className="mt-2 text-[12.5px] leading-relaxed text-slate-500">
-                We’ll mark your documents in smaller batches instead of all at once. After
-                each batch we check how much of your allowance is left and automatically send
-                the next one — getting smaller as you near your limit. Marking stops on its own
+                We’ll mark your documents in batches of up to {MAX_BATCH_DOCS} instead of all at
+                once. After each batch we check how much of your allowance is left and automatically
+                send the next one — getting smaller as you near your limit. Marking stops on its own
                 when your allowance runs out, so you only get through the documents your plan
                 covers; the rest are left untouched for after you renew. You don’t need to do
                 anything while it runs — just keep this tab open.

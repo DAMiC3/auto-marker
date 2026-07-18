@@ -25,6 +25,12 @@ export const MAX_OUTPUT_TOKENS = 16000;
 // are idempotent (no state written before the response), so retrying is safe.
 export const MAX_RETRIES = 4;
 
+// Hard ceiling on documents in ONE batch submission (Anthropic-side + our own
+// blast-radius guard, safety rule C15). Lives here (a client+server-shared module)
+// so the client can cap its own chunk sizes to match the server, without importing
+// the server-only lib/usage.ts. The batch route re-checks this server-side.
+export const MAX_BATCH_DOCS = 100;
+
 // A page is either extracted text (cheap) or a fallback image (for scans/diagrams).
 export type PageContent =
   | { kind: "text"; text: string }
