@@ -757,6 +757,14 @@ export default function SettingsPanel({ open, onClose, onSave, initial, onTakeTo
               </>
             )}
           </p>
+          {/* Legal — always one tap away. Open in a new tab so the user keeps their place. */}
+          <div className="flex items-center justify-center gap-3 text-[11px] text-slate-400">
+            <a href="/terms" target="_blank" rel="noopener noreferrer" className="hover:text-slate-600 transition-colors">Terms</a>
+            <span aria-hidden>·</span>
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:text-slate-600 transition-colors">Privacy</a>
+            <span aria-hidden>·</span>
+            <a href="/refunds" target="_blank" rel="noopener noreferrer" className="hover:text-slate-600 transition-colors">Refunds</a>
+          </div>
           <div className="flex gap-3">
             <button
               onClick={onClose}

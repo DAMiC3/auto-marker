@@ -198,13 +198,16 @@ export default function LoginPage() {
                 />
                 <span>
                   I agree to the{" "}
-                  <a
-                    href="/terms"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[var(--accent-400)] underline underline-offset-2 hover:opacity-80"
-                  >
+                  <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-400)] underline underline-offset-2 hover:opacity-80">
                     Terms &amp; Conditions
+                  </a>
+                  ,{" "}
+                  <a href="/privacy" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-400)] underline underline-offset-2 hover:opacity-80">
+                    Privacy Policy
+                  </a>
+                  , and{" "}
+                  <a href="/refunds" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-400)] underline underline-offset-2 hover:opacity-80">
+                    Refund Policy
                   </a>
                   .
                 </span>

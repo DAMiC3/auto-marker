@@ -2,9 +2,11 @@
 // NO server imports here — the /terms page, the signup form, and the acceptance
 // gate all import from this file.
 //
-// HOW RE-PROMPTING WORKS: a user is considered to have accepted when their
-// profiles.terms_version equals CURRENT_TERMS_VERSION. To force everyone to
-// re-accept after a material change, bump CURRENT_TERMS_VERSION (and the date) —
+// ONE acceptance covers ALL THREE agreements — Terms & Conditions, Privacy Policy,
+// and Refund Policy. This single version is what profiles.terms_version stores and
+// is compared against; the Privacy and Refund policies derive their version from it
+// (see lib/privacy.ts / lib/refunds.ts). So to force everyone to re-accept after a
+// material change to ANY of the three, bump CURRENT_TERMS_VERSION (and the date) —
 // every existing user then sees the acceptance pop-up again on their next visit.
 
 export const CURRENT_TERMS_VERSION = "2026-07-19";

@@ -62,9 +62,9 @@ export default function TermsGate() {
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/70 backdrop-blur-sm px-4 py-6">
       <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl bg-white shadow-2xl overflow-hidden">
         <div className="px-6 pt-6 pb-4 border-b border-slate-200">
-          <h2 className="text-[19px] font-bold text-slate-900">We’ve added Terms &amp; Conditions</h2>
+          <h2 className="text-[19px] font-bold text-slate-900">Please review our policies</h2>
           <p className="text-[13px] text-slate-500 mt-1">
-            Please review and accept them to keep using AutoMark.
+            To keep using AutoMark, please accept our Terms &amp; Conditions, Privacy Policy, and Refund Policy.
           </p>
         </div>
 
@@ -73,6 +73,12 @@ export default function TermsGate() {
         </div>
 
         <div className="px-6 py-4 border-t border-slate-200 bg-slate-50">
+          <p className="text-[12px] text-slate-500 mb-3">
+            By clicking below, you confirm you have read and agree to our{" "}
+            <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-600)] underline underline-offset-2">Terms &amp; Conditions</a>,{" "}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-600)] underline underline-offset-2">Privacy Policy</a>, and{" "}
+            <a href="/refunds" target="_blank" rel="noopener noreferrer" className="text-[var(--accent-600)] underline underline-offset-2">Refund Policy</a>.
+          </p>
           {error && <p className="text-[13px] text-red-600 mb-2">{error}</p>}
           <div className="flex flex-col sm:flex-row-reverse gap-2.5">
             <button
@@ -81,7 +87,7 @@ export default function TermsGate() {
               disabled={busy}
               className="flex-1 rounded-xl py-3 text-[14px] font-semibold text-white bg-[var(--accent-600)] hover:bg-[var(--accent-700)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {busy ? "Saving…" : "I agree to the Terms & Conditions"}
+              {busy ? "Saving…" : "I agree to all three"}
             </button>
             <button
               type="button"

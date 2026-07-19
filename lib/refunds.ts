@@ -1,10 +1,11 @@
 // Client- and server-safe Refund Policy content. No server imports.
 // Rendered by the public /refunds page via the shared PolicyBody component.
-import { TERMS_CONTACT_EMAIL, TERMS_ENTITY } from "@/lib/terms";
+import { CURRENT_TERMS_VERSION, TERMS_CONTACT_EMAIL, TERMS_EFFECTIVE_DATE, TERMS_ENTITY } from "@/lib/terms";
 import type { PolicySection } from "@/components/PolicyBody";
 
-export const REFUNDS_VERSION = "2026-07-19";
-export const REFUNDS_EFFECTIVE_DATE = "19 July 2026";
+// Derived from the single acceptance version so all three agreements move together.
+export const REFUNDS_VERSION = CURRENT_TERMS_VERSION;
+export const REFUNDS_EFFECTIVE_DATE = TERMS_EFFECTIVE_DATE;
 
 export const REFUNDS_SECTIONS: PolicySection[] = [
   {
