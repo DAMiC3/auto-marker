@@ -125,8 +125,8 @@ A trial is granted explicitly via `set_plan(user, 'trial')`, which sets:
 
 No credit card required. When the trial expires (7 days) or the R50 budget runs out, the user is blocked and sees an upgrade prompt. A self-serve "Start free trial" button (so users can claim it without manual grant) is the remaining piece to build.
 
-**2C · Payment gateway integration (PayFast)**  
-PayFast is the best fit for ZAR subscriptions in SA — supports recurring payments, instant EFT, credit cards, and has a straightforward webhook API.
+**2C · Payment gateway integration (PayFast)** — ✅ **BUILT 2026-07-19** (see `categories/01-payments-and-enforcement.md` "PayFast paygate"; owner still needs to set secrets + sandbox-test before go-live).  
+PayFast is the best fit for ZAR subscriptions in SA — supports recurring payments, instant EFT, credit cards, and has a straightforward webhook API. *(Netcash was compared and deferred as a scale-time debit-order optimisation — see the paygate comparison; PayFast wins now on instant activation + zero fixed cost.)*
 
 Flow:
 1. User clicks "Upgrade" → redirect to PayFast checkout with the plan details

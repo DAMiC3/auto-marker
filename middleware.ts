@@ -15,13 +15,16 @@ export async function middleware(req: NextRequest) {
   // Static assets / PWA files — always allow. `/api/health` is here too so an
   // EXTERNAL uptime monitor gets a clean 200 without an auth redirect, and the
   // liveness probe never touches Supabase (it reflects Worker/hosting up only).
+  // `/api/webhooks/payfast` is allow-listed because PayFast's server POSTs the ITN
+  // with no auth cookie; the route does its own signature + postback verification.
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/icon") ||
     pathname === "/manifest.json" ||
     pathname === "/sw.js" ||
     pathname === "/favicon.ico" ||
-    pathname === "/api/health"
+    pathname === "/api/health" ||
+    pathname === "/api/webhooks/payfast"
   ) {
     return NextResponse.next();
   }

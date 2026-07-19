@@ -48,6 +48,9 @@ Worker secrets (set via `npx wrangler secret put NAME`):
 - `ANTHROPIC_API_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `OPS_ALERT_WEBHOOK_URL` (optional) — ops alerts on Supabase write failure (e.g. an `ntfy.sh` topic for phone push). Unset = log-only. See Category 1 §13b.
+- `PAYFAST_MERCHANT_ID` / `PAYFAST_MERCHANT_KEY` / `PAYFAST_PASSPHRASE` — PayFast paygate credentials (the passphrase must match the one set on the PayFast account). Until all three are set the checkout returns `not_configured` and shows a graceful "payments unavailable" message. See Category 1 (PayFast paygate).
+
+`PAYFAST_MODE` (`sandbox` | `live`, default **`sandbox`**) and `NEXT_PUBLIC_APP_URL` are non-secret `vars` in `wrangler.jsonc`. **Sandbox-test before flipping `PAYFAST_MODE=live`.**
 
 Bindings in `wrangler.jsonc`:
 - `USAGE_DLQ` (Cloudflare D1) — dead-letter buffer for failed usage writes (Problem 8). Needs a one-time `wrangler d1 create` + pasting the `database_id`; see Category 1 §13b.
@@ -94,8 +97,7 @@ Reverse later with `Remove-MpPreference -ExclusionPath "C:\Users\Michael Bernard
 - Standard R1000/mo → R300 usage cap (70% margin)
 - Pro R3000/mo → R1500 cap (5× Standard, 50% margin)
 - Allowance shown as **percentage only** — never Rand or tokens
-- Manual EFT + WhatsApp BVB activation. No card payments yet.
-- Assign plans via SQL: `select public.set_plan('<uuid>', 'standard');`
+- **Self-serve PayFast** recurring subscriptions (card + Instant EFT) — the `/plans` page → `/api/checkout/payfast` → verified ITN at `/api/webhooks/payfast` → `set_plan()`. The old manual EFT/WhatsApp flow was removed. Manual `set_plan` SQL still works as an admin/comp override: `select public.set_plan('<uuid>', 'standard');`
 
 ## Where to go for depth
 

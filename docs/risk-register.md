@@ -63,16 +63,17 @@ See `categories/04-error-handling.md` for the full catalogue.
 
 ---
 
-## 5. New risk surface a paygate will introduce (for when it's built)
+## 5. Paygate risk surface (PayFast built 2026-07-19)
 
-A paygate removes the manual-activation bottleneck but adds:
-- **Webhook signature verification** (e.g. PayFast ITN) — unverified = anyone grants themselves a plan.
-- **Idempotency** — duplicate webhooks must not double-credit (the dashboard keys on id; the AutoMark side needs the same).
-- **Reconciliation** — charged but webhook failed → paid, no plan. Needs a poll/manual fallback.
-- **Lifecycle** — refunds, chargebacks, failed/partial payments, renewals, cancellations, upgrade proration.
-- **Sandbox testing** before going live; VAT/invoicing if registered.
+The manual-activation bottleneck is removed (self-serve PayFast, `categories/01` "PayFast paygate"). Status of the surface it introduced:
+- 🟢 **Webhook signature verification** — enforced (ITN signed with our passphrase + PayFast server-postback `VALID`). `lib/payfast.ts`.
+- 🟢 **Idempotency** — enforced on `pf_payment_id` (unique PK in `public.payfast_payments`); replayed ITNs no-op, genuine monthly renewals pass.
+- 🟠 **Reconciliation** — charged-but-`set_plan`-failed alerts loudly (`notifyOps`) with the ledger row as the audit trail, but there's **no automated poll/retry** yet, and no record of *abandoned* checkouts. Manual fallback for now.
+- 🟠 **Lifecycle** — renewals handled (each COMPLETE ITN re-runs `set_plan`). **Not handled:** refunds, chargebacks, a cancellation webhook (a cancelled sub lapses at `period_end`), upgrade proration.
+- 🔴 **Sandbox testing before go-live** — `PAYFAST_MODE=sandbox` by default; **must sandbox-test end-to-end before `PAYFAST_MODE=live`**. VAT/invoicing if registered.
+- 🔴 **Owner secrets** — `PAYFAST_MERCHANT_ID/KEY/PASSPHRASE` must be set or checkout stays `not_configured`.
 
-See the pay-gate spec in `HANDOFF.md` (bernard-dashboard) for the required `revenue_events` insert + sync webhook.
+See the pay-gate spec in `HANDOFF.md` (bernard-dashboard) for the `revenue_events` insert + sync webhook.
 
 ---
 

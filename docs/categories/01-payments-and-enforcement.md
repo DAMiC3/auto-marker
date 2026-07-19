@@ -317,9 +317,17 @@ User picks plan on /plans
 - A **`revenue_events` ledger table** on `profiles` logs a row automatically when a **non-owner** moves onto / renews a paid plan. The keeper is **`log_revenue_event()`**, fired by two triggers: `trg_log_revenue_insert` (AFTER INSERT, paid plans) and `trg_log_revenue_update` (AFTER UPDATE when `plan` or `period_start` changes). It excludes owner test rows (`bernardmanne3@gmail.com`), prices via `plan_price()`, and sets `search_path`.
 - ✅ The duplicate `log_plan_revenue()` + `trg_log_plan_revenue` (which double-logged every paid-plan update) were **dropped** (migration `drop_duplicate_revenue_trigger`). `revenue_events` was empty, so no reconciliation was needed.
 
+**PayFast paygate — BUILT (2026-07-19):**
+- Self-serve recurring subscriptions replace the manual EFT/WhatsApp flow. The `/plans` page (`app/plans/page.tsx`) POSTs to **`app/api/checkout/payfast/route.ts`**, which returns a signed PayFast form the client auto-submits. PayFast then POSTs an ITN to **`app/api/webhooks/payfast/route.ts`**, which activates the plan.
+- **`lib/payfast.ts`** holds the shared helpers: MD5 signing (via `node:crypto` — Web Crypto has no MD5; `nodejs_compat` provides it), the ordered checkout field builder (recurring: `subscription_type=1`, monthly, indefinite), ITN signature verification, and the server-postback validation.
+- **Webhook verification pipeline (all must pass before `set_plan`):** (1) signature signed with our passphrase, (2) `payment_status=COMPLETE`, (3) `amount_gross` matches the plan price, (4) PayFast postback returns `VALID`, (5) idempotency — the charge's `pf_payment_id` is inserted into **`public.payfast_payments`** (unique PK; a duplicate/replayed ITN no-ops). Then `set_plan(user, plan)` sets cap+period, resets `used_zar`, and the `revenue_events` trigger auto-logs. Always returns HTTP 200 so PayFast stops retrying; failures alert via `notifyOps`.
+- **Idempotency key = `pf_payment_id`, NOT `m_payment_id`** — a recurring subscription reuses one `m_payment_id` across all monthly charges but mints a new `pf_payment_id` each time, so keying on the charge id lets renewals through while blocking replays. Ledger DDL: `db/supabase/payfast_payments.sql` (service-role only; RLS on, no policies).
+- **Middleware** allow-lists `/api/webhooks/payfast` (PayFast posts with no auth cookie); the route does its own verification.
+- **Owner actions before it can take money:** set `PAYFAST_MERCHANT_ID` / `PAYFAST_MERCHANT_KEY` / `PAYFAST_PASSPHRASE` secrets, sandbox-test end-to-end (`PAYFAST_MODE=sandbox`, the default), then flip `PAYFAST_MODE=live`. Until configured, checkout returns `not_configured` gracefully.
+
 **Not built yet (tracked in `../expansion-plan.md` Phase 2):**
-- Automated payment gateway (PayFast) + webhook handler (the ledger exists, but nothing *automatically* triggers `set_plan` from a payment yet — activation is still manual EFT/WhatsApp/SQL).
-- **Self-serve "Start free trial" button** — trial is currently a manual SQL grant; new users hit a wall until granted.
+- Abandoned-checkout reconciliation (an unpaid checkout simply never activates — correct — but there's no record of the attempt) and a PayFast cancellation webhook (today a cancelled subscription lapses naturally at `period_end`).
+- Trial-expiry / low-balance email warnings (these are Category 3 — UI/notifications).
 - Trial-expiry / low-balance email warnings (these are Category 3 — UI/notifications).
 - Mid-batch *hard* enforcement (current guard is a pre-flight estimate, not a per-paper stop).
 
@@ -517,7 +525,7 @@ Parked rows drain themselves on the next successful marking write; this is just 
 | **P1-5** | 🟡 | **Hardcoded cost constants** (`USD_TO_ZAR = 18.5`, token prices in `lib/cost.ts`) → silent margin drift when Anthropic re-prices or ZAR moves. | Add a periodic review note, or source rates from config. |
 | **P1-6** | 🟢 | **`recordUsage` silent failure → free usage** (Problem 8) — ✅ **BUILT + LIVE (2026-06-15).** Failed writes are parked in a **Cloudflare D1** dead-letter buffer (`pending_usage`, binding `USAGE_DLQ`) and auto-drained on the next successful `add_usage`; `notifyOps()` alerts via `OPS_ALERT_WEBHOOK_URL`. The pre-check error path now also pages ops (done via `checkAllowance()`, P1-2). See §6.3 / §11b / §13b. | Optional only: a scheduled cron drain (currently drains opportunistically on the next write); set `OPS_ALERT_WEBHOOK_URL` secret to enable phone push. |
 | ~~**P1-7**~~ | 🟢 | ✅ **FIXED (2026-06-15).** Trial farming — `set_plan` now enforces **one trial per email** via a persistent `trial_claims` ledger (keyed by email, survives account deletion); a second trial raises `trial_already_used`. Paid plans unaffected. Migration `one_trial_per_email`; see §4.1. | Done. (Multi-email farming is out of scope by design — "one per email" was the chosen policy.) |
-| **P1-8** | 🔵 | **Not built** — PayFast gateway + webhook → auto `set_plan`; self-serve "Start free trial" button. | Expansion plan Phase 2. |
+| ~~**P1-8**~~ | 🟢 | ✅ **BUILT (2026-07-19).** PayFast recurring paygate: `/plans` → `/api/checkout/payfast` (signed form) → verified ITN at `/api/webhooks/payfast` → `set_plan`. Signature + `COMPLETE` + amount + PayFast-postback + `pf_payment_id` idempotency all enforced (`lib/payfast.ts`, `public.payfast_payments`). Manual EFT/WhatsApp flow removed. | Done in code. **Owner: set PayFast secrets, sandbox-test, then `PAYFAST_MODE=live`.** |
 
 ---
 

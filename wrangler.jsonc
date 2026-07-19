@@ -26,6 +26,12 @@
   ],
   "vars": {
     "NEXT_PUBLIC_SUPABASE_URL": "https://pdlkkfedovssaaecemkp.supabase.co",
-    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkbGtrZmVkb3Zzc2FhZWNlbWtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0NTA5NzIsImV4cCI6MjA3ODAyNjk3Mn0.c69rj9Sk7E-Luam3QV6u1pq8exAVKint-AFiu2z0QuE"
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkbGtrZmVkb3Zzc2FhZWNlbWtwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI0NTA5NzIsImV4cCI6MjA3ODAyNjk3Mn0.c69rj9Sk7E-Luam3QV6u1pq8exAVKint-AFiu2z0QuE",
+    // PayFast checkout. Public (non-secret) config only. The MERCHANT_ID /
+    // MERCHANT_KEY / PASSPHRASE are secrets — set via `wrangler secret put`.
+    // PAYFAST_MODE stays "sandbox" until sandbox testing passes; flip to "live" to
+    // take real money. NEXT_PUBLIC_APP_URL is the base for return/cancel/notify URLs.
+    "PAYFAST_MODE": "sandbox",
+    "NEXT_PUBLIC_APP_URL": "https://auto-marker.bernardmanne3.workers.dev"
   }
 }

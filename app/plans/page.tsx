@@ -1,8 +1,7 @@
 "use client";
 
 import Link from "next/link";
-
-const WHATSAPP = "27799050642"; // 079 905 0642 in international format
+import { useEffect, useState } from "react";
 
 const PLANS = [
   {
@@ -20,14 +19,63 @@ const PLANS = [
     points: ["5× the monthly allowance", "Best for exam season", "High accuracy available"],
     featured: true,
   },
-];
+] as const;
 
-function waLink(plan: string) {
-  const msg = `Hi! I'd like to activate the ${plan} plan. Here is my proof of payment.`;
-  return `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(msg)}`;
-}
+type PlanKey = (typeof PLANS)[number]["key"];
 
 export default function PlansPage() {
+  const [busy, setBusy] = useState<PlanKey | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<"success" | "cancelled" | null>(null);
+
+  // Read the return status from PayFast (?status=success|cancelled) on the client,
+  // so we don't need a Suspense boundary for useSearchParams.
+  useEffect(() => {
+    const s = new URLSearchParams(window.location.search).get("status");
+    if (s === "success" || s === "cancelled") setStatus(s);
+  }, []);
+
+  async function choosePlan(plan: PlanKey) {
+    setBusy(plan);
+    setError(null);
+    try {
+      const res = await fetch("/api/checkout/payfast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(
+          body.error === "not_configured"
+            ? "Payments aren’t available right now. Please try again shortly."
+            : "Couldn’t start checkout. Please try again.",
+        );
+      }
+      const { action, fields } = (await res.json()) as {
+        action: string;
+        fields: { name: string; value: string }[];
+      };
+      // Build and submit a hidden form so the fields reach PayFast in the exact
+      // order they were signed in (any reordering would break the signature).
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = action;
+      for (const f of fields) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = f.name;
+        input.value = f.value;
+        form.appendChild(input);
+      }
+      document.body.appendChild(form);
+      form.submit();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
+      setBusy(null);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#F3F6FB] px-4 py-10">
       <div className="max-w-3xl mx-auto">
@@ -41,19 +89,37 @@ export default function PlansPage() {
 
         <h1 className="text-[26px] font-bold text-slate-900 mb-1">Choose your plan</h1>
         <p className="text-[14px] text-slate-500 mb-8">
-          Choose a plan and activate it with a simple EFT payment. No card needed.
+          Subscribe securely with card or Instant EFT. Your plan activates automatically — cancel anytime.
         </p>
 
+        {/* Return status from PayFast */}
+        {status === "success" && (
+          <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[13.5px] text-emerald-800">
+            <strong className="font-semibold">Thanks — your payment is being confirmed.</strong> Your plan
+            activates within a minute. If the allowance bar hasn’t updated, refresh the page.
+          </div>
+        )}
+        {status === "cancelled" && (
+          <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13.5px] text-amber-800">
+            Checkout cancelled — you haven’t been charged. Pick a plan below whenever you’re ready.
+          </div>
+        )}
+        {error && (
+          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13.5px] text-red-700">
+            {error}
+          </div>
+        )}
+
         {/* Plans */}
-        <div className="grid sm:grid-cols-2 gap-5 mb-10">
+        <div className="grid sm:grid-cols-2 gap-5 mb-8">
           {PLANS.map((p) => (
             <div
               key={p.key}
               className={`rounded-2xl border bg-white p-6 flex flex-col ${
-                p.featured ? "border-[var(--accent-500)] ring-1 ring-[var(--accent-500)]" : "border-slate-200"
+                "featured" in p && p.featured ? "border-[var(--accent-500)] ring-1 ring-[var(--accent-500)]" : "border-slate-200"
               }`}
             >
-              {p.featured && (
+              {"featured" in p && p.featured && (
                 <span className="self-start mb-3 text-[11px] font-semibold text-[var(--accent-700)] bg-[var(--accent-50)] px-2.5 py-1 rounded-full">
                   Most popular
                 </span>
@@ -74,65 +140,46 @@ export default function PlansPage() {
                   </li>
                 ))}
               </ul>
-              <a
-                href={waLink(p.name)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`mt-auto text-center rounded-xl py-3 text-[14px] font-semibold transition-colors ${
-                  p.featured
+              <button
+                type="button"
+                onClick={() => choosePlan(p.key)}
+                disabled={busy !== null}
+                className={`mt-auto text-center rounded-xl py-3 text-[14px] font-semibold transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                  "featured" in p && p.featured
                     ? "bg-[var(--accent-600)] hover:bg-[var(--accent-700)] text-white"
                     : "bg-slate-100 hover:bg-slate-200 text-slate-800"
                 }`}
               >
-                Choose {p.name}
-              </a>
+                {busy === p.key ? "Redirecting to checkout…" : `Choose ${p.name}`}
+              </button>
             </div>
           ))}
         </div>
 
-        {/* How to pay */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-5">
-          <h3 className="text-[15px] font-semibold text-slate-900 mb-4">How to pay</h3>
-          <ol className="flex flex-col gap-3">
-            {[
-              "Pay the amount for your chosen plan into the account below (EFT).",
-              "WhatsApp us your proof of payment.",
-              "Your subscription is activated within 24 hours.",
-            ].map((step, i) => (
-              <li key={i} className="flex items-start gap-3 text-[14px] text-slate-700">
-                <span className="shrink-0 w-6 h-6 rounded-full bg-[var(--accent-600)] text-white text-[12px] font-bold flex items-center justify-center">
-                  {i + 1}
-                </span>
-                {step}
-              </li>
-            ))}
-          </ol>
+        {/* Trust / how billing works */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-6">
+          <h3 className="text-[15px] font-semibold text-slate-900 mb-3">How billing works</h3>
+          <ul className="flex flex-col gap-2.5 text-[13.5px] text-slate-600">
+            <li className="flex items-start gap-2.5">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--accent-50)] text-[var(--accent-700)] text-[11px] font-bold flex items-center justify-center mt-0.5">1</span>
+              Choose a plan and pay securely on PayFast — credit/cheque card or Instant EFT.
+            </li>
+            <li className="flex items-start gap-2.5">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--accent-50)] text-[var(--accent-700)] text-[11px] font-bold flex items-center justify-center mt-0.5">2</span>
+              Your plan activates automatically the moment payment is confirmed — no waiting, no admin.
+            </li>
+            <li className="flex items-start gap-2.5">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-[var(--accent-50)] text-[var(--accent-700)] text-[11px] font-bold flex items-center justify-center mt-0.5">3</span>
+              It renews monthly and your allowance resets each cycle. Cancel anytime from PayFast.
+            </li>
+          </ul>
+          <p className="mt-4 flex items-center gap-1.5 text-[12px] text-slate-400">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            Payments are processed by PayFast. AutoMark never sees your card details.
+          </p>
         </div>
-
-        {/* Bank details */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 mb-5">
-          <h3 className="text-[15px] font-semibold text-slate-900 mb-4">Banking details</h3>
-          <dl className="grid grid-cols-[140px_1fr] gap-y-2 text-[14px]">
-            <dt className="text-slate-500">Account name</dt><dd className="text-slate-900 font-medium">MA Bernard</dd>
-            <dt className="text-slate-500">Account number</dt><dd className="text-slate-900 font-medium">10012930071</dd>
-            <dt className="text-slate-500">Branch code</dt><dd className="text-slate-900 font-medium">580105</dd>
-            <dt className="text-slate-500">Bank</dt><dd className="text-slate-900 font-medium">Investec</dd>
-          </dl>
-        </div>
-
-        {/* WhatsApp */}
-        <a
-          href={waLink("chosen")}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-2.5 rounded-2xl py-4 bg-[#25D366] hover:bg-[#1ebe5d] text-white font-semibold text-[15px] transition-colors"
-        >
-          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51l-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.71.306 1.263.489 1.694.625.712.227 1.36.195 1.872.118.571-.085 1.758-.719 2.006-1.413.247-.694.247-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
-          </svg>
-          WhatsApp your proof of payment
-        </a>
-        <p className="text-center text-[13px] text-slate-500 mt-3">079 905 0642</p>
       </div>
     </div>
   );
