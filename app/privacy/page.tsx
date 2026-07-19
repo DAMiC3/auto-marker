@@ -1,12 +1,12 @@
 import Link from "next/link";
-import TermsBody from "@/components/TermsBody";
-import { CURRENT_TERMS_VERSION } from "@/lib/terms";
+import PolicyBody from "@/components/PolicyBody";
+import { TERMS_ENTITY } from "@/lib/terms";
+import { PRIVACY_EFFECTIVE_DATE, PRIVACY_SECTIONS, PRIVACY_VERSION } from "@/lib/privacy";
 
-export const metadata = { title: "Terms & Conditions · AutoMark" };
+export const metadata = { title: "Privacy Policy · AutoMark" };
 
-// Public page — reachable without signing in (allow-listed in middleware) so it can
-// be linked from the signup form and the acceptance pop-up.
-export default function TermsPage() {
+// Public page — allow-listed in middleware so it's readable without signing in.
+export default function PrivacyPage() {
   return (
     <div className="min-h-screen bg-[#F3F6FB] px-4 py-10">
       <div className="max-w-2xl mx-auto">
@@ -17,16 +17,16 @@ export default function TermsPage() {
           Back to AutoMark
         </Link>
 
-        <h1 className="text-[26px] font-bold text-slate-900 mb-6">Terms &amp; Conditions</h1>
+        <h1 className="text-[26px] font-bold text-slate-900 mb-6">Privacy Policy</h1>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 text-slate-700">
-          <TermsBody />
+          <PolicyBody entity={TERMS_ENTITY} effectiveDate={PRIVACY_EFFECTIVE_DATE} sections={PRIVACY_SECTIONS} />
         </div>
 
         <div className="flex items-center justify-center gap-4 text-[12px] text-slate-400 mt-4">
-          <span>Version {CURRENT_TERMS_VERSION}</span>
+          <span>Version {PRIVACY_VERSION}</span>
           <span>·</span>
-          <Link href="/privacy" className="hover:text-slate-600 underline underline-offset-2">Privacy</Link>
+          <Link href="/terms" className="hover:text-slate-600 underline underline-offset-2">Terms</Link>
           <Link href="/refunds" className="hover:text-slate-600 underline underline-offset-2">Refunds</Link>
         </div>
       </div>
