@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { authErrorMessage } from "@/lib/authErrors";
+import { CURRENT_TERMS_VERSION } from "@/lib/terms";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -16,6 +17,7 @@ export default function LoginPage() {
   const [error, setError]       = useState("");
   const [notice, setNotice]     = useState("");
   const [loading, setLoading]   = useState(false);
+  const [agreed, setAgreed]     = useState(false); // T&C acceptance (signup only)
   // P7-6: offer a "resend confirmation email" action once we know the account
   // exists but isn't confirmed (failed sign-in, or just-created sign-up).
   const [canResend, setCanResend] = useState(false);
@@ -69,11 +71,19 @@ export default function LoginPage() {
     }
 
     // sign up
+    if (!agreed) {
+      setError("Please accept the Terms & Conditions to create an account.");
+      setLoading(false);
+      return;
+    }
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        data: { full_name: name },
+        // terms_version is copied into the profile by the handle_new_user trigger,
+        // so a user who ticks the box here is recorded as accepted at sign-up and
+        // never sees the acceptance pop-up.
+        data: { full_name: name, terms_version: CURRENT_TERMS_VERSION },
         emailRedirectTo: `${location.origin}/auth/callback`,
       },
     });
@@ -175,6 +185,30 @@ export default function LoginPage() {
             )}
             {mode === "signup" && (
               <p className="-mt-1 text-[12px] text-slate-500">Use at least 8 characters.</p>
+            )}
+
+            {mode === "signup" && (
+              <label className="flex items-start gap-2.5 text-[13px] text-slate-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={agreed}
+                  onChange={(e) => setAgreed(e.target.checked)}
+                  required
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/20 bg-white/5 accent-[var(--accent-600)]"
+                />
+                <span>
+                  I agree to the{" "}
+                  <a
+                    href="/terms"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--accent-400)] underline underline-offset-2 hover:opacity-80"
+                  >
+                    Terms &amp; Conditions
+                  </a>
+                  .
+                </span>
+              </label>
             )}
 
             {error && <p className="text-red-400 text-[13px]">{error}</p>}

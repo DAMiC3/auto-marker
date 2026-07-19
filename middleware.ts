@@ -7,7 +7,7 @@ import { withTimeout } from "@/lib/withTimeout";
 const url     = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
-const PUBLIC_PREFIXES = ["/login", "/auth"];
+const PUBLIC_PREFIXES = ["/login", "/auth", "/terms"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

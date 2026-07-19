@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import UpdatePrompt from "@/components/UpdatePrompt";
+import TermsGate from "@/components/TermsGate";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -29,6 +30,10 @@ export default function RootLayout({
         </Script>
 
         {children}
+
+        {/* Blocking T&C acceptance for existing accounts (no-ops when signed out
+            or already accepted). New signups accept via the login-form checkbox. */}
+        <TermsGate />
 
         {/* Registers the service worker and prompts to reload on a new version */}
         <UpdatePrompt />

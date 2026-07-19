@@ -9,6 +9,17 @@ The one-line truth: **email/password auth via Supabase, with email confirmation 
 
 ---
 
+## 0. Terms & Conditions acceptance (added 2026-07-19)
+
+Every account must accept the T&Cs. One source of truth: **`lib/terms.ts`** holds the content + `CURRENT_TERMS_VERSION`; **`components/TermsBody.tsx`** renders it for both the public **`/terms`** page (allow-listed in middleware) and the pop-up.
+
+- **New signups** tick a required checkbox on the login form; `terms_version` is passed in `signUp` metadata and copied into the profile by the **`handle_new_user`** trigger — so they're recorded as accepted at creation and never see the pop-up.
+- **Existing accounts** get a **blocking modal** (`components/TermsGate.tsx`, mounted in the root layout). It shows whenever `profiles.terms_version <> CURRENT_TERMS_VERSION`; "I agree" POSTs **`/api/terms/accept`** (service-role write, user identified from their own session). "Decline & sign out" logs them out.
+- **Re-prompting on a terms change:** bump `CURRENT_TERMS_VERSION` — every existing user's stored version no longer matches, so the modal reappears for all of them on their next visit.
+- **Columns:** `profiles.terms_version` + `profiles.terms_accepted_at` (migration `terms_acceptance_tracking`).
+
+---
+
 ## 1. Auth architecture — three clients, three contexts
 
 Supabase auth is accessed through **three distinct clients**, each for a different runtime/trust level. Never mix them up.
