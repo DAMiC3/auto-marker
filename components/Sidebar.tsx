@@ -36,6 +36,22 @@ export default function Sidebar({
   const [showCreed, setShowCreed] = useState(false);
   const [signingOut, setSigningOut]     = useState(false);
   const [signOutError, setSignOutError] = useState(false);
+  // P8-3: when the user hasn't set a display name in Settings, fall back to the
+  // full name they gave at signup (stored in Supabase user metadata) rather than
+  // a baked-in default. Email local-part is the last resort so the header is
+  // never blank.
+  const [accountName, setAccountName] = useState("");
+  useEffect(() => {
+    let alive = true;
+    createClient().auth.getUser().then(({ data }) => {
+      if (!alive) return;
+      const meta = data.user?.user_metadata as { full_name?: string } | undefined;
+      const fromEmail = data.user?.email?.split("@")[0] ?? "";
+      setAccountName((meta?.full_name || fromEmail || "").trim());
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const displayName = (profileName || accountName || "Your account").trim();
 
   // Esc closes whichever popover/menu is open (P3-6 accessibility).
   useEffect(() => {
@@ -66,7 +82,7 @@ export default function Sidebar({
     router.refresh();
   }
 
-  const initials = profileName
+  const initials = displayName
     .split(" ")
     .map((p) => p[0])
     .filter(Boolean)
@@ -228,7 +244,7 @@ export default function Sidebar({
             {initials || "U"}
           </div>
           <div className="min-w-0 flex-1 text-left">
-            <p className="text-[13px] font-medium text-[#EFF4FE] truncate">{profileName}</p>
+            <p className="text-[13px] font-medium text-[#EFF4FE] truncate">{displayName}</p>
             <p className="text-[11px] text-[#657BAA] truncate">{profileSubject}</p>
           </div>
           <svg className="w-4 h-4 text-[#657BAA] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

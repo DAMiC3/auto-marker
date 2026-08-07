@@ -500,6 +500,19 @@ export default function Home() {
     setAddingMemo(true);
     try {
       const text = await extractMemoText(file).catch(() => "");
+      // P8-2: refuse a memo we couldn't read any text from — almost always a
+      // scanned/photographed (image-only) PDF. Saving it silently would let a
+      // lecturer mark a whole batch against a blank answer key, the most
+      // dangerous silent failure in the product. A real typed memo has far more
+      // than a handful of characters; a scan yields "" (or a few stray ones).
+      if (text.replace(/\s+/g, "").length < 20) {
+        setError(
+          `“${file.name}” looks like a scan or image-only PDF — no readable text could be extracted, ` +
+            `so it can’t be used as an answer key. Save the memo as a text-based PDF (one where you can ` +
+            `select the text) and add it again.`
+        );
+        return;
+      }
       const memo: Memo = { id: `memo-${Date.now()}`, name: file.name, addedAt: Date.now(), text, blob: file };
       await saveMemo(memo);
       const updated = await listMemos();

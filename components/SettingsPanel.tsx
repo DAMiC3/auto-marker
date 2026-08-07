@@ -56,7 +56,9 @@ export const DEFAULT_MARK_TYPES: MarkType[] = [
 export const DEFAULT_SETTINGS: Settings = {
   defaultStrictness: 7,
   accent: "indigo",
-  profile: { name: "Michael Bernard", subject: "English" },
+  // P8-3: no founder name baked in — a new user's greeting falls back to the
+  // name they gave at signup (see Sidebar), then to a neutral placeholder.
+  profile: { name: "", subject: "English" },
   markTypes: DEFAULT_MARK_TYPES,
   markingQuality: "standard",
   subjects: ["English", "Mathematics"],

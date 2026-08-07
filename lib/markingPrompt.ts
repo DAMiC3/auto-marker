@@ -211,24 +211,65 @@ export function parseMarkResponse(rawText: string): MarkResponse {
     total?: number; available?: number; percentage?: number; summary?: string;
     annotations?: { p?: number; y?: number; s?: string; m?: string; c?: string }[];
   };
+  const rawAnns = raw.annotations ?? [];
+
+  // P8-1: the app — not the model — is the authority on the total. The AI marks
+  // each answer "n/m"; we sum the awarded (n) and available (m) across every
+  // annotation and stamp THAT. The model's self-reported `total`/`available` are
+  // ignored whenever we can sum the marks ourselves, because a model total that
+  // contradicts the visible ticks (ticks summing 12/20 but total:15) is the worst
+  // failure a marking product can show a lecturer. We only fall back to the
+  // model's figures when no annotation carried a parseable "n/m" (e.g. a paper
+  // with comment-only notes and no per-question marks).
+  const summed = sumAwardedMarks(rawAnns);
+  const total     = summed.counted > 0 ? summed.total     : (raw.total ?? 0);
+  const available = summed.counted > 0 ? summed.available : (raw.available ?? 0);
+
   // Expand the short keys (p,y,s,m,c) back to the full annotation shape.
-  const total = raw.total ?? 0;
-  const available = raw.available ?? 0;
   return {
     total,
     available,
-    // P5-2: compute the percentage from the marks rather than trusting the
-    // model's self-reported value, which can be internally inconsistent with
-    // total/available. Guard against divide-by-zero (no available marks → 0%).
+    // P5-2: derive the percentage from total/available (now the reconciled
+    // sums) rather than trusting the model's self-reported value. Guard against
+    // divide-by-zero (no available marks → 0%).
     percentage: available > 0 ? Math.round((total / available) * 100) : 0,
     summary: raw.summary ?? "",
-    annotations: (raw.annotations ?? []).map((a) => ({
+    annotations: rawAnns.map((a) => ({
       page: a.p ?? 1,
       y: a.y ?? 0,
       shape: a.s ?? "tick",
       marks: a.m ?? "",
       comment: a.c ?? "",
     })),
+  };
+}
+
+// P8-1 helper: sum the awarded and available marks across annotations whose `m`
+// field is a parseable "n/m" (n and m may be decimals, e.g. "1.5/2"). `counted`
+// is how many annotations actually contributed, so the caller can tell "summed
+// to zero" apart from "nothing to sum". Rounded to 2dp to shed float noise
+// (12.000000001 → 12) while preserving legitimate half-marks.
+function sumAwardedMarks(
+  anns: { m?: string }[]
+): { total: number; available: number; counted: number } {
+  let total = 0;
+  let available = 0;
+  let counted = 0;
+  for (const a of anns) {
+    const m = (a.m ?? "").trim();
+    const slash = m.indexOf("/");
+    if (slash === -1) continue;
+    const n = parseFloat(m.slice(0, slash));
+    const d = parseFloat(m.slice(slash + 1));
+    if (!Number.isFinite(n) || !Number.isFinite(d)) continue;
+    total += n;
+    available += d;
+    counted += 1;
+  }
+  return {
+    total: Math.round(total * 100) / 100,
+    available: Math.round(available * 100) / 100,
+    counted,
   };
 }
 

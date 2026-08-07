@@ -295,3 +295,18 @@ The app is in much better shape than most solo-founder products: fail-closed bil
 **Worth doing when touching those areas anyway:** instant-route pre-flight estimate (§3), `waitUntil` for the DLQ drain (§3), TOCTOU reservation (§3 — theoretical at current scale), founder-name default profile (§6), duplicate-shape mark types (§6), stray WildLodge files + repo hygiene (§1, §9), TrialCta success flash (§6), chunk-dialog a11y (§6), trial-farming mitigations when signups open up (§4).
 
 **Explicitly fine as-is:** anon key in wrangler.jsonc, service-role-only tables with zero policies, percentage-only allowance display, manual EFT flow, the fence-based injection defence, the PWA/service-worker setup, and the deploy dance (documented, works).
+
+---
+
+## Status update — 2026-08-07 (trust-for-first-3-customers pass)
+
+Went back through this review filtered to "what would make an early trusted customer stop trusting us." Fixed the output-correctness trust-killers; one item deliberately left open for the owner to verify first.
+
+**Fixed this session (P8-x):**
+- ✅ **§2 last-page notes overflow** — already resolved earlier: feedback now lays out on dedicated appended page(s) sized to the wrapped text ([markPaper.ts:234](lib/markPaper.ts:234)), never over the exam.
+- ✅ **§2 total/available not reconciled (P8-1)** — `parseMarkResponse` now **sums the per-question `n/m` marks in code and stamps that**, ignoring the model's self-reported `total`/`available` whenever any annotation carried a parseable mark (falls back to the model's figures only when nothing was summable). The AI marks; the app adds up the total. `lib/markingPrompt.ts` (`sumAwardedMarks`).
+- ✅ **§2 empty/scanned memo silent failure (P8-2)** — `handleAddMemo` now **refuses** a memo with <20 readable chars (image-only/scanned PDF) with a clear "save as a text-based PDF" message, instead of silently saving a blank answer key. `app/page.tsx`.
+- ✅ **§6 founder-name default profile (P8-3)** — `DEFAULT_SETTINGS.profile.name` is now `""`; the Sidebar greeting falls back to the signup `full_name` (Supabase user metadata), then email local-part, then "Your account". No more "Michael Bernard" greeting new users. `components/SettingsPanel.tsx`, `components/Sidebar.tsx`.
+
+**⏳ DEFERRED — still open, remember this (§8 #1): Opus "High accuracy" priced 3× too high.**
+[cost.ts:17](lib/cost.ts:17) meters `claude-opus-4-7` at **$15 in / $75 out** per MTok. Fable's review says the real rate is **$5 / $25** — if correct, High-accuracy customers burn allowance 3× too fast and get ~⅓ the marking they paid for. **Intentionally NOT changed yet** — the owner wants to verify the live price against the Anthropic Console/pricing page before touching billing. When confirmed, fix `RATES` **and** `BATCH_RATES` in `lib/cost.ts` (Opus row only — Sonnet 4.6 $3/$15 is correct), then re-run the arithmetic in [docs/cost-and-pricing-notes.md](docs/cost-and-pricing-notes.md). A one-line unit test of `RATES` against the published sheet would lock this down (§1).
