@@ -196,6 +196,31 @@ function memoryGuardMessage(reached: number, total: number): string {
   );
 }
 
+// Why a memo came back with no readable text depends on what was handed to us, and
+// so does the fix — re-export a scan with a text layer, type answers into cells, or
+// convert an unsupported file. Naming the actual cause stops the lecturer chasing
+// the wrong one.
+function unreadableMemoMessage(name: string): string {
+  const n = name.toLowerCase();
+  if (/\.(xlsx|xlsm|csv)$/.test(n))
+    return (
+      `“${name}” has no readable text in it — the sheet looks empty, or the answers sit in ` +
+      `images, charts or text boxes rather than in cells. Type the answers into cells and add it again.`
+    );
+  if (n.endsWith(".pdf"))
+    return (
+      `“${name}” looks like a scan or image-only PDF — no readable text could be extracted, ` +
+      `so it can’t be used as an answer key. Save the memo as a text-based PDF (one where you can ` +
+      `select the text) and add it again.`
+    );
+  if (n.endsWith(".txt"))
+    return `“${name}” is empty — there’s no answer key text in it to mark against.`;
+  return (
+    `“${name}” isn’t a file type AutoMark can read as a memo. Use a text-based PDF, an Excel ` +
+    `workbook (.xlsx), a .csv, or a .txt file.`
+  );
+}
+
 // A batch run paused at the over-limit dialog (P1-4). Holds everything needed to
 // resume as a chunked run if the user chooses "Mark in chunks".
 interface ChunkCtx {
@@ -499,18 +524,23 @@ export default function Home() {
     setError(null);
     setAddingMemo(true);
     try {
-      const text = await extractMemoText(file).catch(() => "");
-      // P8-2: refuse a memo we couldn't read any text from — almost always a
-      // scanned/photographed (image-only) PDF. Saving it silently would let a
-      // lecturer mark a whole batch against a blank answer key, the most
-      // dangerous silent failure in the product. A real typed memo has far more
-      // than a handful of characters; a scan yields "" (or a few stray ones).
+      let text: string;
+      try {
+        text = await extractMemoText(file);
+      } catch (e) {
+        // The reasons we expect (legacy .xls, corrupt/password-protected workbook)
+        // arrive already worded for the lecturer — show them as-is rather than
+        // routing them through the generic handler, which would also log a bug report.
+        setError(e instanceof Error ? e.message : `Could not read “${file.name}”.`);
+        return;
+      }
+      // P8-2: refuse a memo we couldn't read any text from — usually a
+      // scanned/photographed (image-only) PDF, or a spreadsheet whose answers live
+      // in pictures rather than cells. Saving it silently would let a lecturer mark
+      // a whole batch against a blank answer key, the most dangerous silent failure
+      // in the product. A real typed memo has far more than a handful of characters.
       if (text.replace(/\s+/g, "").length < 20) {
-        setError(
-          `“${file.name}” looks like a scan or image-only PDF — no readable text could be extracted, ` +
-            `so it can’t be used as an answer key. Save the memo as a text-based PDF (one where you can ` +
-            `select the text) and add it again.`
-        );
+        setError(unreadableMemoMessage(file.name));
         return;
       }
       const memo: Memo = { id: `memo-${Date.now()}`, name: file.name, addedAt: Date.now(), text, blob: file };
@@ -1084,7 +1114,7 @@ export default function Home() {
                           {addingMemo ? "Adding…" : "+ Add memo"}
                         </button>
                         <span className="text-[13px] text-slate-400">
-                          Your memo archive is empty. Add one to reuse it across batches.
+                          Your memo archive is empty. Add a PDF, Excel, .csv or .txt memo to reuse it across batches.
                         </span>
                       </div>
                     ) : (

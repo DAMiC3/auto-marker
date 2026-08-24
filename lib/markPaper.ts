@@ -4,6 +4,7 @@ import { PDFDocument, rgb, StandardFonts, type PDFPage, type RGB } from "pdf-lib
 import type { MarkType } from "@/components/SettingsPanel";
 import type { PageContent, Annotation } from "@/lib/markingPrompt";
 import { SHAPE_GEOMETRY, shapeWeight, type MarkShape } from "@/lib/markShapes";
+import { isSpreadsheet, extractSpreadsheetText } from "@/lib/spreadsheet";
 
 export type { PageContent } from "@/lib/markingPrompt";
 
@@ -116,10 +117,13 @@ export async function preparePaper(file: File): Promise<PreparedPaper> {
   return { original, pages };
 }
 
-/** Best-effort memo text extraction (digital PDF text layer / .txt). */
+/** Best-effort memo text extraction (digital PDF text layer / .txt / spreadsheet).
+ *  Returns "" for anything unreadable; only the spreadsheet path throws, and only
+ *  when it has something specific to tell the lecturer about the file. */
 export async function extractMemoText(file: File): Promise<string> {
   const name = file.name.toLowerCase();
   if (name.endsWith(".txt")) return file.text();
+  if (isSpreadsheet(name)) return extractSpreadsheetText(file);
   if (name.endsWith(".pdf")) {
     const pdfjs = await getPdfjs();
     const buf = new Uint8Array(await file.arrayBuffer());

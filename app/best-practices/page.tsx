@@ -26,6 +26,7 @@ const SECTIONS: { title: string; points: string[] }[] = [
       "Include worked examples for calculation questions, not just final answers.",
       "Spell out partial-mark criteria explicitly — e.g. \"1 mark for the correct formula, 1 for correct substitution, 1 for the final answer.\"",
       "A typed or exported memo works far better than a photographed one — scanned memos aren't read for text.",
+      "Your memo can be a text-based PDF, an Excel workbook (.xlsx), a .csv, or a plain .txt file — a sheet with one row per question (question, expected answer, marks) reads especially cleanly.",
       "Keep the memo out of your \"to mark\" folder, or AutoMark will try to mark it as a paper.",
     ],
   },

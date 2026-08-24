@@ -309,7 +309,22 @@ export async function pickFile(): Promise<File | null> {
   if (!w.showOpenFilePicker) return null;
   try {
     const [handle] = await w.showOpenFilePicker({
-      types: [{ description: "Documents", accept: { "application/pdf": [".pdf"], "text/plain": [".txt"] } }],
+      types: [
+        {
+          description: "Memo (answer key)",
+          accept: {
+            "application/pdf": [".pdf"],
+            "text/plain": [".txt"],
+            "text/csv": [".csv"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+            "application/vnd.ms-excel.sheet.macroEnabled.12": [".xlsm"],
+            // Legacy .xls can't actually be read, but listing it means the file is
+            // visible in the picker and we can explain the fix (save as .xlsx)
+            // instead of the lecturer wondering why it's greyed out.
+            "application/vnd.ms-excel": [".xls"],
+          },
+        },
+      ],
     });
     return handle.getFile();
   } catch {
